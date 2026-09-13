@@ -4,7 +4,7 @@ import * as React from "react";
 import { Sheet } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
-import { FlipHorizontal2, ScanLine, CameraOff } from "lucide-react";
+import { FlipHorizontal2, ScanLine, CameraOff, Check } from "lucide-react";
 
 export function CameraCapture({
   onClose,
@@ -20,6 +20,7 @@ export function CameraCapture({
   );
   const [error, setError] = React.useState<string | null>(null);
   const [ready, setReady] = React.useState(false);
+  const [flash, setFlash] = React.useState(false);
 
   const stop = React.useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -92,6 +93,8 @@ export function CameraCapture({
     canvas.toBlob(
       (blob) => {
         if (!blob) return;
+        setFlash(true);
+        setTimeout(() => setFlash(false), 600);
         const file = new File([blob], `scan-${Date.now()}.jpg`, {
           type: "image/jpeg",
         });
@@ -141,6 +144,13 @@ export function CameraCapture({
         {!error && ready && (
           <div className="pointer-events-none absolute inset-0">
             <div className="scan-beam" />
+          </div>
+        )}
+        {flash && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-white/30 transition-opacity">
+            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg">
+              <Check className="h-8 w-8" />
+            </div>
           </div>
         )}
       </div>

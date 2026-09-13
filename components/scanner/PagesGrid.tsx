@@ -125,7 +125,7 @@ export function PagesGrid({
 
             <div
               className={cn(
-                "absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex-col gap-1 opacity-0 transition-opacity group-hover:opacity-100",
+                "absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex-col gap-1 sm:opacity-0 sm:transition-opacity sm:group-hover:opacity-100",
                 pages.length > 1 && "flex",
               )}
             >

@@ -317,7 +317,7 @@ export function Scanner() {
           <ArrowLeft className="h-5 w-5" />
         </Link>
         <div>
-          <h1 className="text-lg font-semibold leading-tight">Tài liệu mới</h1>
+          <h1 className="text-lg font-semibold leading-tight">{docName}</h1>
           <p className="text-xs text-muted-foreground">
             {pages.length === 0
               ? "Chưa có trang"
