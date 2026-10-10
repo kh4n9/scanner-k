@@ -1,4 +1,4 @@
-import { applyFilterRgba, isNeutralFilter } from "./image-pixels";
+import { applyFilterRgba, autoAdjust, isNeutralFilter } from "./image-pixels";
 import type { Adjust, FilterMode, PaperShape, Point, Rotate } from "./types";
 import { warpInWorker } from "./warpWorker";
 
@@ -76,7 +76,6 @@ export async function computeAutoAdjust(
     sorted[Math.min(sorted.length - 1, Math.max(0, Math.round(q * (sorted.length - 1))))];
   const p05 = pct(0.05);
   const p95 = pct(0.95);
-  const spread = Math.max(1, p95 - p05);
 
   // Always flatten the background. On an even, already-white page the
   // normalization is a near no-op (every gain sits at ~1), while a colour cast
@@ -85,11 +84,9 @@ export async function computeAutoAdjust(
   // now gets corrected. The per-page toggle in the editor is the opt-out.
   const shadow = true;
 
-  // Expand low-contrast scans, but never reduce an already contrasty image:
-  // the floor is 1.0 so auto-enhance can only improve (or leave) contrast.
-  const contrast = clamp(128 / spread, 1.0, 1.8);
-  const brightness = clamp(128 / Math.max(1, mean), 0.8, 1.5);
-  return { adjust: { brightness, contrast, saturation: 1.12 }, shadow };
+  // The parameter maths lives in the DOM-free pixel module so the harness can
+  // test the exact combination that ships.
+  return { adjust: autoAdjust(mean, p05, p95), shadow };
 }
 
 function dist(ax: number, ay: number, bx: number, by: number) {

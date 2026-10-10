@@ -155,8 +155,40 @@ const PAPER_PERCENTILE = 0.97;
 // paper (see `normalizeBackground`).
 const DENOISE_RADIUS = 3;
 
+// Where to put the white point, relative to where the paper actually lands after
+// the flat field. Driving the paper onto pure white is what makes a scan print
+// white instead of a grey wash: dividing by a local MAX leaves the sheet a level
+// or two short (the estimate sits above the paper's mean), and that residue is
+// exactly what a printer renders as grey. The margin lets the paper's own
+// unevenness clip away too, so the sheet comes out flat rather than mottled.
+const PAPER_WHITE_PERCENTILE = 0.7;
+const PAPER_KNEE_MARGIN = 4;
+// Below this the page has no paper to speak of (a photo, not a document) and the
+// white point must be left alone.
+const MIN_PAPER_LEVEL = 200;
+const MAX_WHITE_GAIN = 1.2;
+
 function gainFor(bg: number) {
   return clamp(255 / Math.max(1, bg), 1, MAX_BG_GAIN);
+}
+
+/**
+ * Auto-enhance parameters from a scan's luminance statistics. Pure, so the
+ * harness can exercise the combination that actually ships.
+ *
+ * Both knobs are one-way: contrast may only rise, and brightness may only rise.
+ * The brightness floor used to be 0.8, which meant a page filling a well-lit
+ * frame (mean ~167) got brightness 0.8 — and because brightness is applied AFTER
+ * the background is flattened, it multiplied the white sheet straight back down
+ * to ~209 and the page printed grey however good the flattening was.
+ */
+export function autoAdjust(mean: number, p05: number, p95: number): Adjust {
+  const spread = Math.max(1, p95 - p05);
+  return {
+    brightness: clamp(128 / Math.max(1, mean), 1.0, 1.5),
+    contrast: clamp(128 / spread, 1.0, 1.8),
+    saturation: 1.12,
+  };
 }
 
 // Flatten uneven lighting and make the paper white whatever the light looked
@@ -220,6 +252,12 @@ function normalizeBackground(d: Uint8ClampedArray, w: number, h: number) {
   const sw = Math.ceil(w / ds);
   const sh = Math.ceil(h / ds);
   const sample = new Float32Array(sw * sh);
+  // One sample per pooled cell, not per pixel.
+  const samples = sw * sh;
+  const radius = Math.max(8, Math.min(w, h) * 0.05);
+  const rMax = Math.max(1, Math.round(radius / step));
+  const rBlur = Math.max(1, Math.round(rMax / 2));
+  const whiteScale: number[] = [1, 1, 1];
   for (let ch = 0; ch < 3; ch++) {
     for (let y = 0; y < h; y += ds) {
       const y2 = Math.min(y + ds - 1, h - 1);
@@ -247,15 +285,7 @@ function normalizeBackground(d: Uint8ClampedArray, w: number, h: number) {
         hch[v | 0]++;
       }
     }
-  }
 
-  // The histogram now counts one sample per pooled cell, not per pixel.
-  const samples = sw * sh;
-  const radius = Math.max(8, Math.min(w, h) * 0.05);
-  const rMax = Math.max(1, Math.round(radius / step));
-  const rBlur = Math.max(1, Math.round(rMax / 2));
-  for (let ch = 0; ch < 3; ch++) {
-    const hch = hist[ch];
     let acc = 0;
     let cap = 255;
     const want = PAPER_PERCENTILE * samples;
@@ -287,9 +317,42 @@ function normalizeBackground(d: Uint8ClampedArray, w: number, h: number) {
     );
     const filtered = boxBlur(closed, gw, gh, rBlur);
     for (let i = 0; i < gn; i++) {
-      bg[ch][i] = Math.min(filtered[i], cap);
+      bch[i] = Math.min(filtered[i], cap);
+    }
+
+    // Where THIS channel's paper actually lands after the flat field. Driving the
+    // sheet onto pure white is what makes a scan print white instead of a grey
+    // wash: dividing by a local MAX leaves the paper a level or two short, and
+    // that residue is exactly what a printer renders as grey. Measuring per
+    // channel takes a faint cast left by the light out with it. The margin lets
+    // the paper's own unevenness clip away too, so the sheet comes out flat
+    // rather than mottled. Everything below the knee shifts by only a couple of
+    // percent, so ink and grey fills survive.
+    const whiteHist = new Uint32Array(256);
+    for (let sy = 0; sy < sh; sy++) {
+      const grow = (((sy * ds) / step) | 0) * gw;
+      const hrow = sy * sw;
+      for (let sx = 0; sx < sw; sx++) {
+        const v = smooth[hrow + sx] * gainFor(bch[grow + (((sx * ds) / step) | 0)]);
+        whiteHist[v < 0 ? 0 : v > 255 ? 255 : v | 0]++;
+      }
+    }
+    let wacc = 0;
+    let level = 0;
+    const wwant = PAPER_WHITE_PERCENTILE * samples;
+    for (let v = 0; v < 256; v++) {
+      wacc += whiteHist[v];
+      if (wacc >= wwant) {
+        level = v;
+        break;
+      }
+    }
+    // Below this there is no paper to speak of (a photo, not a document).
+    if (level >= MIN_PAPER_LEVEL) {
+      whiteScale[ch] = clamp(255 / Math.max(1, level - PAPER_KNEE_MARGIN), 1, MAX_WHITE_GAIN);
     }
   }
+  const [wsR, wsG, wsB] = whiteScale;
 
   const [bgR, bgG, bgB] = bg;
   const invStep = 1 / step;
@@ -317,9 +380,9 @@ function normalizeBackground(d: Uint8ClampedArray, w: number, h: number) {
       const bG = bgG[ya + xa] * w00 + bgG[ya + xb] * w10 + bgG[yb + xa] * w01 + bgG[yb + xb] * w11;
       const bB = bgB[ya + xa] * w00 + bgB[ya + xb] * w10 + bgB[yb + xa] * w01 + bgB[yb + xb] * w11;
       const i = (row + x) * 4;
-      d[i] = clamp(d[i] * gainFor(bR), 0, 255);
-      d[i + 1] = clamp(d[i + 1] * gainFor(bG), 0, 255);
-      d[i + 2] = clamp(d[i + 2] * gainFor(bB), 0, 255);
+      d[i] = clamp(d[i] * gainFor(bR) * wsR, 0, 255);
+      d[i + 1] = clamp(d[i + 1] * gainFor(bG) * wsG, 0, 255);
+      d[i + 2] = clamp(d[i + 2] * gainFor(bB) * wsB, 0, 255);
     }
   }
 }
