@@ -1,8 +1,8 @@
 // Pure, DOM-free pixel operations shared by the main thread and the image
 // Web Worker. Nothing here touches `document`, `canvas`, or the DOM, so it can
-// be imported by a worker bundle. The main-thread path in `image.ts` keeps its
-// own copies; the two must stay in sync so a worker render matches a main-
-// thread render exactly.
+// be imported by a worker bundle. This is the single implementation of the
+// filter pipeline: the main-thread path in `image.ts` calls `applyFilterRgba`
+// too, so a worker render and a main-thread render can never drift apart.
 
 import type { Adjust, FilterMode } from "./types";
 
@@ -56,54 +56,271 @@ function boxBlur(src: Float32Array, w: number, h: number, radius: number) {
   return out;
 }
 
-// Separable maximum filter (morphological dilation). The background of a page is
-// the brightness of the paper, so we take the local MAX — dark text/corners must
-// not pull the estimate down, otherwise normalizing would brighten them too.
-function maxFilter(src: Float32Array, w: number, h: number, radius: number) {
+// Separable sliding-window extremum. `pickMax` selects a maximum filter
+// (morphological dilation) or a minimum filter (erosion). The background of a
+// page is the brightness of the paper, so the dilation is what stops dark text
+// and rules from pulling the estimate down and making normalization brighten
+// them too.
+//
+// The window is CENTRED on each output pixel. A naive monotonic-deque sweep
+// gives an off-centre window that only looks back, which biases the estimate
+// toward whichever side of the page happens to be brighter — the paper would
+// then come out a different shade depending on which way the light fell,
+// precisely the lighting-dependence this pass exists to remove.
+function extremumFilter(
+  src: Float32Array,
+  w: number,
+  h: number,
+  radius: number,
+  pickMax: boolean,
+) {
   const tmp = new Float32Array(w * h);
   const out = new Float32Array(w * h);
-  const win = radius * 2 + 1;
+  // Horizontal pass over the centred window [x - radius, x + radius].
   for (let y = 0; y < h; y++) {
     const row = y * w;
     const dq = new Int32Array(w);
     let head = 0;
     let tail = 0;
+    // Prime with the columns left of centre so the first output already sees
+    // its full window. The deque never holds an out-of-range index, so at the
+    // edges the window simply shrinks — the same result clamping would give.
+    for (let k = 0; k < radius && k < w; k++) {
+      const nxt = src[row + k];
+      while (tail > head) {
+        const cur = src[row + dq[tail - 1]];
+        if (pickMax ? cur > nxt : cur < nxt) break;
+        tail--;
+      }
+      dq[tail++] = k;
+    }
     for (let x = 0; x < w; x++) {
-      while (tail > head && src[row + dq[tail - 1]] <= src[row + x]) tail--;
-      dq[tail++] = x;
-      if (dq[head] <= x - win) head++;
+      const add = x + radius;
+      if (add < w) {
+        const nxt = src[row + add];
+        while (tail > head) {
+          const cur = src[row + dq[tail - 1]];
+          if (pickMax ? cur > nxt : cur < nxt) break;
+          tail--;
+        }
+        dq[tail++] = add;
+      }
+      if (dq[head] < x - radius) head++;
       tmp[row + x] = src[row + dq[head]];
     }
   }
+  // Vertical pass over the centred window [y - radius, y + radius].
   for (let x = 0; x < w; x++) {
     const dq = new Int32Array(h);
     let head = 0;
     let tail = 0;
+    for (let k = 0; k < radius && k < h; k++) {
+      const nxt = tmp[k * w + x];
+      while (tail > head) {
+        const cur = tmp[dq[tail - 1] * w + x];
+        if (pickMax ? cur > nxt : cur < nxt) break;
+        tail--;
+      }
+      dq[tail++] = k;
+    }
     for (let y = 0; y < h; y++) {
-      while (tail > head && tmp[dq[tail - 1] * w + x] <= tmp[y * w + x]) tail--;
-      dq[tail++] = y;
-      if (dq[head] <= y - win) head++;
+      const add = y + radius;
+      if (add < h) {
+        const nxt = tmp[add * w + x];
+        while (tail > head) {
+          const cur = tmp[dq[tail - 1] * w + x];
+          if (pickMax ? cur > nxt : cur < nxt) break;
+          tail--;
+        }
+        dq[tail++] = add;
+      }
+      if (dq[head] < y - radius) head++;
       out[y * w + x] = tmp[dq[head] * w + x];
     }
   }
   return out;
 }
 
-// Flatten uneven illumination: estimate the white paper level per-pixel (local
-// max, so text never drags it down), then scale each pixel toward white. Shadows
-// fade but dark ink keeps its relative darkness — text is preserved.
+// Never lift a pixel by more than this. Real paper across a single page varies
+// by well under 2.5x (a heavily vignetted corner sits around 90-110 encoded),
+// so the cap still reaches pure white on real paper while bounding how much
+// sensor grain and JPEG blocking get amplified in the darks.
+const MAX_BG_GAIN = 2.5;
+
+// The paper level of the page as a whole, taken as a high percentile per channel.
+const PAPER_PERCENTILE = 0.97;
+
+// How much to average each channel before estimating the paper level. The
+// estimate is a local MAX, so without this it chases sensor noise instead of the
+// paper (see `normalizeBackground`).
+const DENOISE_RADIUS = 3;
+
+function gainFor(bg: number) {
+  return clamp(255 / Math.max(1, bg), 1, MAX_BG_GAIN);
+}
+
+// Flatten uneven lighting and make the paper white whatever the light looked
+// like. Paper is the locally brightest surface, so for each channel we estimate
+// the paper level with a morphological closing (a local MAX to keep text and
+// rules from dragging the estimate down, then a matching MIN to take back the
+// bias that dilation adds on a lighting slope) and divide the pixel by it. Going per channel rather than on luminance
+// alone is what removes a colour cast: a page shot under warm light has warm
+// paper, and its blue channel is simply divided by a smaller number, so the
+// paper lands on white. Because the estimate is local, shadows and vignetting
+// flatten at the same time.
+//
+// This is a von Kries diagonal correction using the paper as the local white
+// point, so an ink that is a neutral density over the paper comes out exactly
+// neutral (paper (250,232,196) gains (1.02, 1.10, 1.30); neutral ink at 14% of
+// paper goes (35.0, 32.5, 27.4) -> (35.7, 35.7, 35.7)). Doing it on
+// sRGB-encoded values instead of linear light costs at most ~2 LSB because a
+// power-law encoding commutes with multiplication — not worth a pow() per pixel.
 function normalizeBackground(d: Uint8ClampedArray, w: number, h: number) {
-  const n = w * h;
-  const lum = getLuminance(d, n);
-  const radius = Math.max(8, Math.round(Math.min(w, h) * 0.05));
-  const paper = maxFilter(lum, w, h, radius);
-  const bg = boxBlur(paper, w, h, Math.max(2, Math.round(radius * 0.5)));
-  for (let p = 0; p < n; p++) {
-    const scale = clamp(255 / Math.max(40, bg[p]), 0.95, 2.1);
-    const i = p * 4;
-    d[i] = clamp(d[i] * scale, 0, 255);
-    d[i + 1] = clamp(d[i + 1] * scale, 0, 255);
-    d[i + 2] = clamp(d[i + 2] * scale, 0, 255);
+  // The paper/illumination field is smooth, so estimate it on a grid `step`
+  // times coarser: max-pool each channel (a block's brightest sample is that
+  // block's paper — mean-pooling would let text drag it down), run the max and
+  // blur filters there, then bilinearly upsample while applying. On a 200-DPI
+  // A4 page that is ~25x less work than filtering every pixel; on small images
+  // (thumbnails, min side <= 320) step is 1 and it stays exact.
+  const step = clamp(Math.round(Math.min(w, h) / 320), 1, 6);
+  const gw = Math.ceil(w / step);
+  const gh = Math.ceil(h / step);
+  const gn = gw * gh;
+  const bg: Float32Array[] = [
+    new Float32Array(gn),
+    new Float32Array(gn),
+    new Float32Array(gn),
+  ];
+  // Per-channel histogram, built while pooling, so the page-wide paper level
+  // costs no extra traversal or sort.
+  const hist: Uint32Array[] = [
+    new Uint32Array(256),
+    new Uint32Array(256),
+    new Uint32Array(256),
+  ];
+
+  // Denoise BEFORE estimating. The estimate is a local MAX, and a max latches
+  // onto the brightest noise speck inside its window: with the 2-4 levels of
+  // sensor noise a real photo carries, and a window that sees thousands of
+  // samples, the max sits several sigma above the paper's true level. That
+  // pushes the paper down (a grey rather than white background) and — because
+  // the overshoot differs from place to place — leaves it blotchy. Averaging a
+  // neighbourhood first divides the noise before any max is taken, so the
+  // estimate settles on the paper's level instead of its peaks. Text survives
+  // this: a blur only softens a stroke, and the max that follows still finds
+  // paper inside its window.
+  //
+  // The averaging happens on a half-size copy. A 2x2 mean there plus a small box
+  // blur still averages tens of source pixels per sample — enough to kill the
+  // bias — for a quarter of the work, and the pooling below then reads a quarter
+  // as many samples. With `step` at 1 (small images) there is no room to shrink
+  // without leaving grid cells unsampled, so it stays at full size and leans on
+  // the blur alone.
+  const ds = step >= 2 ? 2 : 1;
+  const sw = Math.ceil(w / ds);
+  const sh = Math.ceil(h / ds);
+  const sample = new Float32Array(sw * sh);
+  for (let ch = 0; ch < 3; ch++) {
+    for (let y = 0; y < h; y += ds) {
+      const y2 = Math.min(y + ds - 1, h - 1);
+      const hrow = ((y / ds) | 0) * sw;
+      for (let x = 0; x < w; x += ds) {
+        const x2 = Math.min(x + ds - 1, w - 1);
+        sample[hrow + ((x / ds) | 0)] =
+          (d[(y * w + x) * 4 + ch] +
+            d[(y * w + x2) * 4 + ch] +
+            d[(y2 * w + x) * 4 + ch] +
+            d[(y2 * w + x2) * 4 + ch]) /
+          4;
+      }
+    }
+    const smooth = boxBlur(sample, sw, sh, DENOISE_RADIUS);
+    const bch = bg[ch];
+    const hch = hist[ch];
+    for (let sy = 0; sy < sh; sy++) {
+      const grow = (((sy * ds) / step) | 0) * gw;
+      const hrow = sy * sw;
+      for (let sx = 0; sx < sw; sx++) {
+        const v = smooth[hrow + sx];
+        const g = grow + (((sx * ds) / step) | 0);
+        if (v > bch[g]) bch[g] = v;
+        hch[v | 0]++;
+      }
+    }
+  }
+
+  // The histogram now counts one sample per pooled cell, not per pixel.
+  const samples = sw * sh;
+  const radius = Math.max(8, Math.min(w, h) * 0.05);
+  const rMax = Math.max(1, Math.round(radius / step));
+  const rBlur = Math.max(1, Math.round(rMax / 2));
+  for (let ch = 0; ch < 3; ch++) {
+    const hch = hist[ch];
+    let acc = 0;
+    let cap = 255;
+    const want = PAPER_PERCENTILE * samples;
+    for (let v = 0; v < 256; v++) {
+      acc += hch[v];
+      if (acc >= want) {
+        cap = v;
+        break;
+      }
+    }
+    // Cap the local estimate at the page's paper level. A specular highlight is
+    // brighter than paper: uncapped it would pin the estimate at 255, drive the
+    // gain to 1 and leave the shadowed paper around it un-flattened.
+    //
+    // This is a morphological closing (dilate then erode) rather than a plain
+    // dilation. Dilation alone is biased upward wherever the illumination
+    // slopes, which would leave the paper a few percent grey on the shadowed
+    // side — a lighting-dependent result again. The erosion takes that bias back
+    // out (it cancels exactly for a smooth gradient) while keeping ink removed,
+    // and since the dilation had already pulled dark regions in by rMax, the
+    // erosion only restores them to their true edges — no halo grows around a
+    // large dark graphic.
+    const closed = extremumFilter(
+      extremumFilter(bg[ch], gw, gh, rMax, true),
+      gw,
+      gh,
+      rMax,
+      false,
+    );
+    const filtered = boxBlur(closed, gw, gh, rBlur);
+    for (let i = 0; i < gn; i++) {
+      bg[ch][i] = Math.min(filtered[i], cap);
+    }
+  }
+
+  const [bgR, bgG, bgB] = bg;
+  const invStep = 1 / step;
+  for (let y = 0; y < h; y++) {
+    // Bilinear weights are the same for all three channels, so work them out once.
+    const yf = (y + 0.5) * invStep - 0.5;
+    const y0 = Math.floor(yf);
+    const fy = yf - y0;
+    const ya = clamp(y0, 0, gh - 1) * gw;
+    const yb = clamp(y0 + 1, 0, gh - 1) * gw;
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      const xf = (x + 0.5) * invStep - 0.5;
+      const x0 = Math.floor(xf);
+      const fx = xf - x0;
+      const xa = clamp(x0, 0, gw - 1);
+      const xb = clamp(x0 + 1, 0, gw - 1);
+      const w00 = (1 - fx) * (1 - fy);
+      const w10 = fx * (1 - fy);
+      const w01 = (1 - fx) * fy;
+      const w11 = fx * fy;
+      // Upsample the background value and then derive the gain — gain is
+      // nonlinear in bg, so interpolating bg is the stable choice.
+      const bR = bgR[ya + xa] * w00 + bgR[ya + xb] * w10 + bgR[yb + xa] * w01 + bgR[yb + xb] * w11;
+      const bG = bgG[ya + xa] * w00 + bgG[ya + xb] * w10 + bgG[yb + xa] * w01 + bgG[yb + xb] * w11;
+      const bB = bgB[ya + xa] * w00 + bgB[ya + xb] * w10 + bgB[yb + xa] * w01 + bgB[yb + xb] * w11;
+      const i = (row + x) * 4;
+      d[i] = clamp(d[i] * gainFor(bR), 0, 255);
+      d[i + 1] = clamp(d[i + 1] * gainFor(bG), 0, 255);
+      d[i + 2] = clamp(d[i + 2] * gainFor(bB), 0, 255);
+    }
   }
 }
 
@@ -162,6 +379,20 @@ function adaptiveThreshold(d: Uint8ClampedArray, w: number, h: number) {
   }
 }
 
+// Whether the pipeline would leave every pixel untouched. Exported so the
+// canvas path in `image.ts` can skip `getImageData`/`putImageData` entirely for
+// the common "no processing" case instead of reading the buffer to find out.
+export function isNeutralFilter(
+  filter: FilterMode,
+  adjust?: Adjust,
+  opts?: { shadow?: boolean; sharpen?: boolean },
+): boolean {
+  if (opts?.shadow || opts?.sharpen) return false;
+  if (filter !== "original") return false;
+  const a = normalizeAdjust(adjust);
+  return a.brightness === 1 && a.contrast === 1 && a.saturation === 1;
+}
+
 // Apply the full filter pipeline (shadow flatten, sharpen, then binarization or
 // the color/grayscale correction loop) directly on a raw RGBA buffer.
 export function applyFilterRgba(
@@ -172,18 +403,11 @@ export function applyFilterRgba(
   adjust?: Adjust,
   opts?: { shadow?: boolean; sharpen?: boolean },
 ): boolean {
+  if (isNeutralFilter(filter, adjust, opts)) return false;
+
   const a = normalizeAdjust(adjust);
   const wantShadow = !!opts?.shadow;
   const wantSharpen = !!opts?.sharpen;
-  const neutral =
-    !wantShadow &&
-    !wantSharpen &&
-    filter === "original" &&
-    a.brightness === 1 &&
-    a.contrast === 1 &&
-    a.saturation === 1;
-  if (neutral) return false;
-
   const isGray = filter === "grayscale";
   const isBw = filter === "bw";
 

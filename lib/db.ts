@@ -33,7 +33,12 @@ export type DocMeta = Pick<StoredDoc, "id" | "name" | "updatedAt"> & {
 };
 
 const DB_NAME = "scanner-k";
-const DB_VERSION = 1;
+// v2: background normalization became the default (see `normalizeBackground` in
+// image-pixels.ts). Scans written under v1 carry `shadow: false` *explicitly* —
+// the old auto-detect heuristic set it that way — so defaulting on the read side
+// could never reach them, and would also revert a user's deliberate toggle-off
+// on every reload. Rewrite them once, here, instead.
+const DB_VERSION = 2;
 const STORE = "documents";
 
 let dbPromise: Promise<IDBDatabase> | null = null;
@@ -42,10 +47,28 @@ function openDb(): Promise<IDBDatabase> {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
+    req.onupgradeneeded = (event) => {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) {
         db.createObjectStore(STORE, { keyPath: "id" });
+        return; // fresh install — nothing stored yet to migrate
+      }
+      if (event.oldVersion < 2) {
+        // Inside the `versionchange` transaction, so this is atomic: either
+        // every document is rewritten or none is. A failure part-way cannot
+        // leave the store half-migrated, and nothing is ever deleted.
+        const store = req.transaction!.objectStore(STORE);
+        const cursorReq = store.openCursor();
+        cursorReq.onsuccess = () => {
+          const cursor = cursorReq.result;
+          if (!cursor) return;
+          const doc = cursor.value as StoredDoc;
+          cursor.update({
+            ...doc,
+            pages: doc.pages.map((p) => ({ ...p, shadow: true })),
+          });
+          cursor.continue();
+        };
       }
     };
     req.onsuccess = () => resolve(req.result);

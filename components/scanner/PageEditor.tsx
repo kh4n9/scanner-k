@@ -10,12 +10,13 @@ import {
   computeAutoAdjust,
   detectDocBoundary,
   loadImage,
-  warpPoly,
 } from "@/lib/image";
 import { detectWithOpenCv } from "@/lib/opencv";
+import { PAPER_OPTIONS, paperFor } from "@/lib/paper";
 import type { Adjust, FilterMode, PaperShape, Point, Rotate, ScanPage } from "@/lib/types";
 import { NEUTRAL_ADJUST } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { PagePreview } from "./PagePreview";
 
 const FILTERS: { value: FilterMode; label: string }[] = [
   { value: "original", label: "Gốc" },
@@ -29,22 +30,18 @@ const PRESET_ADJUST: Record<"original" | "color", Adjust> = {
   color: { brightness: 1, contrast: 1.08, saturation: 1.12 },
 };
 
-const PAPER_OPTIONS: { value: PaperShape["kind"]; label: string }[] = [
-  { value: "auto", label: "Tự động" },
-  { value: "a4", label: "A4" },
-  { value: "letter", label: "Letter" },
-  { value: "custom", label: "Tùy chỉnh" },
-];
-
 export function PageEditor({
   page,
   open,
   onApply,
+  onApplyToAll,
   onClose,
 }: {
   page: ScanPage;
   open: boolean;
   onApply: (patch: Partial<ScanPage>) => void;
+  /** Push the paper size being edited out to every page in the document. */
+  onApplyToAll: (paper: PaperShape) => void;
   onClose: () => void;
 }) {
   const containerRef = React.useRef<HTMLDivElement>(null);
@@ -67,7 +64,6 @@ export function PageEditor({
   const [sharpen, setSharpen] = React.useState(page.sharpen ?? false);
   const [rotation, setRotation] = React.useState<Rotate>(page.rotation ?? 0);
   const [dewarpStrength, setDewarpStrength] = React.useState(page.dewarpStrength ?? 0);
-  const [preview, setPreview] = React.useState<string | null>(null);
   const [dragging, setDragging] = React.useState<number | null>(null);
   const [selected, setSelected] = React.useState<number | null>(null);
   const [detectBusy, setDetectBusy] = React.useState(false);
@@ -270,31 +266,23 @@ export function PageEditor({
     setRotation(Math.abs(bw - bh) > 0.02 && bw > bh ? 90 : 0);
   };
 
-  React.useEffect(() => {
-    let active = true;
-    const t = setTimeout(() => {
-      warpPoly({
-        src: page.src,
-        boundary,
-        paper,
-        filter,
-        adjust,
-        shadow,
-        sharpen,
-        rotation,
-        dewarpStrength,
-        maxDim: 460,
-      })
-        .then(({ canvas }) => {
-          if (active) setPreview(canvas.toDataURL("image/jpeg", 0.82));
-        })
-        .catch(() => {});
-    }, 120);
-    return () => {
-      active = false;
-      clearTimeout(t);
-    };
-  }, [page.src, boundary, paper, filter, adjust, shadow, sharpen, rotation, dewarpStrength]);
+  // The page as it is being edited, so the preview reflects uncommitted changes.
+  // PagePreview owns the rendering, which is why this no longer keeps its own
+  // warpPoly preview state.
+  const draft = React.useMemo<ScanPage>(
+    () => ({
+      ...page,
+      boundary,
+      paper,
+      filter,
+      adjust,
+      shadow,
+      sharpen,
+      rotation,
+      dewarpStrength,
+    }),
+    [page, boundary, paper, filter, adjust, shadow, sharpen, rotation, dewarpStrength],
+  );
 
   const setCustomPaper = (w: number, h: number) => {
     setPaper({ kind: "custom", widthMm: Math.round(w), heightMm: Math.round(h) });
@@ -461,6 +449,20 @@ export function PageEditor({
           </span>
         </div>
 
+        {/* Paper preview. The sheet keeps its real ratio for the paper that is
+            selected, so switching A4 / Letter / custom visibly reshapes it. */}
+        <div className="rounded-xl border border-border bg-card p-3">
+          <p className="mb-2 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+            Xem trước tờ giấy
+          </p>
+          <div className="h-[34dvh] w-full">
+            <PagePreview page={draft} maxDim={640} debounceMs={120} />
+          </div>
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            Sau khi nắn thẳng và kéo dãn theo khổ giấy đã chọn.
+          </p>
+        </div>
+
         <div>
           <p className="mb-2 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
             Kích thước giấy
@@ -470,11 +472,7 @@ export function PageEditor({
               <button
                 key={opt.value}
                 type="button"
-                onClick={() =>
-                  opt.value === "custom"
-                    ? setPaper({ kind: "custom", widthMm: 210, heightMm: 297 })
-                    : setPaper({ kind: opt.value } as PaperShape)
-                }
+                onClick={() => setPaper(paperFor(opt.value, paper))}
                 className={cn(
                   "rounded-full border border-border px-2 py-2 text-xs font-medium transition-colors",
                   paper.kind === opt.value
@@ -510,6 +508,17 @@ export function PageEditor({
               <span className="text-xs text-muted-foreground">mm</span>
             </div>
           )}
+          <Button
+            variant="secondary"
+            size="sm"
+            className="mt-2"
+            onClick={() => onApplyToAll(paper)}
+          >
+            Áp dụng cho tất cả trang
+          </Button>
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            A4 và Letter cho mọi trang cùng khổ. Tự động thì mỗi trang theo tỉ lệ riêng.
+          </p>
         </div>
 
         <div>
@@ -644,14 +653,6 @@ export function PageEditor({
           </div>
         </div>
 
-        {preview && (
-          <div className="flex items-center gap-3 rounded-xl border border-border bg-card p-3">
-            <img src={preview} alt="Kết quả" className="h-24 w-20 rounded-lg bg-muted object-contain" />
-            <p className="text-xs text-muted-foreground">
-              Xem trước sau khi nắn thẳng, kéo dãn theo khổ giấy và chỉnh màu.
-            </p>
-          </div>
-        )}
       </div>
     </Sheet>
   );

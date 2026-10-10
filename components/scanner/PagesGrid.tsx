@@ -1,71 +1,10 @@
 "use client";
 
-import * as React from "react";
-import Image from "next/image";
-import { warpPoly } from "@/lib/image";
+import { PagePreview } from "./PagePreview";
 import type { ScanPage } from "@/lib/types";
 import { IconButton } from "@/components/ui/icon-button";
 import { cn } from "@/lib/utils";
 import { ChevronDown, ChevronUp, Pencil, RotateCw, Trash2 } from "lucide-react";
-
-function PageThumb({ page }: { page: ScanPage }) {
-  const [src, setSrc] = React.useState<string | null>(null);
-  const deps = React.useMemo(
-    () =>
-      JSON.stringify({
-        b: page.boundary,
-        p: page.paper,
-        f: page.filter,
-        a: page.adjust,
-        s: page.shadow,
-        sh: page.sharpen,
-        r: page.rotation,
-        d: page.dewarpStrength,
-      }),
-    [page.boundary, page.paper, page.filter, page.adjust, page.shadow, page.sharpen, page.rotation, page.dewarpStrength],
-  );
-
-  React.useEffect(() => {
-    let active = true;
-    warpPoly({
-      src: page.src,
-      boundary: page.boundary,
-      paper: page.paper,
-      filter: page.filter,
-      adjust: page.adjust,
-      shadow: page.shadow,
-      sharpen: page.sharpen,
-      rotation: page.rotation ?? 0,
-      dewarpStrength: page.dewarpStrength ?? 0,
-      maxDim: 480,
-    })
-      .then(({ canvas }) => {
-        if (active) setSrc(canvas.toDataURL("image/jpeg", 0.85));
-      })
-      .catch(() => setSrc(null));
-    return () => {
-      active = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page.src, deps]);
-
-  if (!src) {
-    return (
-      <div className="aspect-[3/4] w-full animate-pulse rounded-lg bg-muted" />
-    );
-  }
-  return (
-    <Image
-      src={src}
-      alt={`Trang ${page.name}`}
-      width={480}
-      height={640}
-      unoptimized
-      className="aspect-[3/4] h-auto w-full rounded-lg bg-card object-cover"
-      draggable={false}
-    />
-  );
-}
 
 export function PagesGrid({
   pages,
@@ -92,7 +31,15 @@ export function PagesGrid({
             key={page.id}
             className="group relative flex flex-col gap-2 rounded-xl border border-border bg-card p-2"
           >
-            <PageThumb page={page} />
+            {/* The cell sets the size and the sheet is taken out of flow inside
+                it: otherwise a tall page's natural height would stretch the cell
+                past its aspect ratio (and past `max-h-full`, whose percentage
+                needs a definite height to resolve against), leaving the grid
+                ragged. The sheet keeps its real paper ratio within the cell, so
+                nothing is cropped whatever size the page is. */}
+            <div className="relative aspect-[3/4] w-full overflow-hidden">
+              <PagePreview page={page} className="absolute inset-0" />
+            </div>
 
             <div className="flex items-center gap-1">
               <span className="px-1 text-xs tabular-nums text-muted-foreground">

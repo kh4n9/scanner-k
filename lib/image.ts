@@ -1,3 +1,4 @@
+import { applyFilterRgba, isNeutralFilter } from "./image-pixels";
 import type { Adjust, FilterMode, PaperShape, Point, Rotate } from "./types";
 import { warpInWorker } from "./warpWorker";
 
@@ -23,220 +24,25 @@ export const FULL_BOUNDARY: Point[] = [
 
 const MM_TO_PT = 72 / 25.4;
 
-export function normalizeAdjust(adjust?: Adjust): Adjust {
-  return {
-    brightness: adjust?.brightness ?? 1,
-    contrast: adjust?.contrast ?? 1,
-    saturation: adjust?.saturation ?? 1,
-  };
-}
-
-function getLuminance(d: Uint8ClampedArray, n: number): Float32Array {
-  const lum = new Float32Array(n);
-  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
-    lum[p] = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
-  }
-  return lum;
-}
-
-function boxBlur(src: Float32Array, w: number, h: number, radius: number) {
-  const tmp = new Float32Array(w * h);
-  const out = new Float32Array(w * h);
-  const win = radius * 2 + 1;
-  const at = (x: number, y: number) => {
-    const cx = clamp(x, 0, w - 1);
-    const cy = clamp(y, 0, h - 1);
-    return src[cy * w + cx];
-  };
-  for (let y = 0; y < h; y++) {
-    let acc = 0;
-    for (let x = -radius; x <= radius; x++) acc += at(x, y);
-    for (let x = 0; x < w; x++) {
-      tmp[y * w + x] = acc / win;
-      acc += at(x + radius + 1, y) - at(x - radius, y);
-    }
-  }
-  for (let x = 0; x < w; x++) {
-    let acc = 0;
-    for (let y = -radius; y <= radius; y++) acc += tmp[clamp(y, 0, h - 1) * w + x];
-    for (let y = 0; y < h; y++) {
-      out[y * w + x] = acc / win;
-      const addY = clamp(y + radius + 1, 0, h - 1);
-      const subY = clamp(y - radius, 0, h - 1);
-      acc += tmp[addY * w + x] - tmp[subY * w + x];
-    }
-  }
-  return out;
-}
-
-// Separable maximum filter (morphological dilation). The background of a page is
-// the brightness of the paper, so we take the local MAX — dark text/corners must
-// not pull the estimate down, otherwise normalizing would brighten them too.
-function maxFilter(src: Float32Array, w: number, h: number, radius: number) {
-  const tmp = new Float32Array(w * h);
-  const out = new Float32Array(w * h);
-  const win = radius * 2 + 1;
-  // Horizontal pass with a sliding-window maximum.
-  for (let y = 0; y < h; y++) {
-    const row = y * w;
-    const dq = new Int32Array(w);
-    let head = 0;
-    let tail = 0;
-    for (let x = 0; x < w; x++) {
-      while (tail > head && src[row + dq[tail - 1]] <= src[row + x]) tail--;
-      dq[tail++] = x;
-      if (dq[head] <= x - win) head++;
-      tmp[row + x] = src[row + dq[head]];
-    }
-  }
-  // Vertical pass with a sliding-window maximum.
-  for (let x = 0; x < w; x++) {
-    const dq = new Int32Array(h);
-    let head = 0;
-    let tail = 0;
-    for (let y = 0; y < h; y++) {
-      while (tail > head && tmp[dq[tail - 1] * w + x] <= tmp[y * w + x]) tail--;
-      dq[tail++] = y;
-      if (dq[head] <= y - win) head++;
-      out[y * w + x] = tmp[dq[head] * w + x];
-    }
-  }
-  return out;
-}
-
-// Flatten uneven illumination: estimate the white paper level per-pixel (local
-// max, so text never drags it down), then scale each pixel toward white. Shadows
-// fade but dark ink keeps its relative darkness — text is preserved.
-function normalizeBackground(d: Uint8ClampedArray, w: number, h: number) {
-  const n = w * h;
-  const lum = getLuminance(d, n);
-  const radius = Math.max(8, Math.round(Math.min(w, h) * 0.05));
-  const paper = maxFilter(lum, w, h, radius);
-  // Smooth the local-max map a little so the gain doesn't look blocky.
-  const bg = boxBlur(paper, w, h, Math.max(2, Math.round(radius * 0.5)));
-  for (let p = 0; p < n; p++) {
-    // Guard against empty areas; never let the gain lift ink toward white.
-    const scale = clamp(255 / Math.max(40, bg[p]), 0.95, 2.1);
-    const i = p * 4;
-    d[i] = clamp(d[i] * scale, 0, 255);
-    d[i + 1] = clamp(d[i + 1] * scale, 0, 255);
-    d[i + 2] = clamp(d[i + 2] * scale, 0, 255);
-  }
-}
-
-// Light unsharp mask: out = orig + amount*(orig - blur). Adds crispness without
-// introducing heavy halos (radius 1, amount ~0.7).
-function unsharpMask(d: Uint8ClampedArray, w: number, h: number, amount = 0.7) {
-  const n = w * h;
-  const channel = new Float32Array(n);
-  for (let ch = 0; ch < 3; ch++) {
-    for (let p = 0; p < n; p++) channel[p] = d[p * 4 + ch];
-    const blur = boxBlur(channel, w, h, 1);
-    for (let p = 0; p < n; p++) {
-      const i = p * 4;
-      const v = d[i + ch] + amount * (d[i + ch] - blur[p]);
-      d[i + ch] = clamp(v, 0, 255);
-    }
-  }
-}
-
-// Sauvola adaptive binarization. Uses integral images to compute local mean and
-// standard deviation in O(1) per pixel, so text stays crisp even in shadowed /
-// uneven regions — unlike a single global threshold.
-function adaptiveThreshold(d: Uint8ClampedArray, w: number, h: number) {
-  const n = w * h;
-  const lum = getLuminance(d, n);
-  const W1 = w + 1;
-  const sum = new Float64Array((w + 1) * (h + 1));
-  const sumsq = new Float64Array((w + 1) * (h + 1));
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const v = lum[y * w + x];
-      const v2 = v * v;
-      const i = (y + 1) * W1 + (x + 1);
-      sum[i] = v + sum[(y) * W1 + (x + 1)] + sum[(y + 1) * W1 + x] - sum[y * W1 + x];
-      sumsq[i] =
-        v2 + sumsq[y * W1 + (x + 1)] + sumsq[(y + 1) * W1 + x] - sumsq[y * W1 + x];
-    }
-  }
-  const radius = Math.max(7, Math.round(Math.min(w, h) * 0.06));
-  const k = 0.22;
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const xl = clamp(x - radius, 0, w - 1);
-      const xr = clamp(x + radius, 0, w - 1);
-      const yt = clamp(y - radius, 0, h - 1);
-      const yb = clamp(y + radius, 0, h - 1);
-      const area = (xr - xl + 1) * (yb - yt + 1);
-      const s = sum[(yb + 1) * W1 + (xr + 1)] - sum[yt * W1 + (xr + 1)] - sum[(yb + 1) * W1 + xl] + sum[yt * W1 + xl];
-      const sq = sumsq[(yb + 1) * W1 + (xr + 1)] - sumsq[yt * W1 + (xr + 1)] - sumsq[(yb + 1) * W1 + xl] + sumsq[yt * W1 + xl];
-      const mean = s / area;
-      const std = Math.sqrt(Math.max(0, sq / area - mean * mean));
-      const t = mean * (1 + k * (std / 128 - 1));
-      const i = (y * w + x) * 4;
-      const on = lum[y * w + x] >= t ? 255 : 0;
-      d[i] = on;
-      d[i + 1] = on;
-      d[i + 2] = on;
-    }
-  }
-}
-
+// Draw the filtered result back onto the canvas. The pixel work itself lives in
+// `image-pixels.ts` so the main-thread and Web-Worker paths can never drift
+// apart, and so this function never needs its own copy of the pipeline.
 export function applyFilter(
   canvas: HTMLCanvasElement,
   filter: FilterMode,
   adjust?: Adjust,
   opts?: { shadow?: boolean; sharpen?: boolean },
 ) {
-  const a = normalizeAdjust(adjust);
-  const wantShadow = !!opts?.shadow;
-  const wantSharpen = !!opts?.sharpen;
-  const neutral =
-    !wantShadow &&
-    !wantSharpen &&
-    filter === "original" &&
-    a.brightness === 1 &&
-    a.contrast === 1 &&
-    a.saturation === 1;
-  if (neutral) return;
-
+  // Skip the buffer round-trip entirely when the pipeline would be a no-op —
+  // the common case while the user drags a slider.
+  if (isNeutralFilter(filter, adjust, opts)) return;
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
   const { width, height } = canvas;
   const imageData = ctx.getImageData(0, 0, width, height);
-  const d = imageData.data;
-  const isGray = filter === "grayscale";
-  const isBw = filter === "bw";
-
-  if (wantShadow) normalizeBackground(d, width, height);
-  if (wantSharpen) unsharpMask(d, width, height);
-
-  if (isBw) {
-    adaptiveThreshold(d, width, height);
+  if (applyFilterRgba(imageData.data, width, height, filter, adjust, opts)) {
     ctx.putImageData(imageData, 0, 0);
-    return;
   }
-
-  const sat = isGray ? 0 : a.saturation;
-  const contrast = a.contrast;
-  const brightness = a.brightness;
-
-  for (let i = 0; i < d.length; i += 4) {
-    const r = d[i];
-    const g = d[i + 1];
-    const b = d[i + 2];
-    const l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    let cr = l + (r - l) * sat;
-    let cg = l + (g - l) * sat;
-    let cb = l + (b - l) * sat;
-    cr = (cr - 128) * contrast + 128;
-    cg = (cg - 128) * contrast + 128;
-    cb = (cb - 128) * contrast + 128;
-    d[i] = clamp(cr * brightness, 0, 255);
-    d[i + 1] = clamp(cg * brightness, 0, 255);
-    d[i + 2] = clamp(cb * brightness, 0, 255);
-  }
-  ctx.putImageData(imageData, 0, 0);
 }
 
 export async function computeAutoAdjust(
@@ -272,10 +78,12 @@ export async function computeAutoAdjust(
   const p95 = pct(0.95);
   const spread = Math.max(1, p95 - p05);
 
-  // Detect shadows: a bright white body (high p95) with a noticeably darker
-  // median means the illumination falls off somewhere — worth flattening.
-  const p50 = pct(0.5);
-  const shadow = p95 > 150 && p50 < p95 * 0.86;
+  // Always flatten the background. On an even, already-white page the
+  // normalization is a near no-op (every gain sits at ~1), while a colour cast
+  // or an illumination falloff — exactly the case the old `p95 > 150 && p50 <
+  // p95 * 0.86` shadow heuristic let through, leaving the paper cream or grey —
+  // now gets corrected. The per-page toggle in the editor is the opt-out.
+  const shadow = true;
 
   // Expand low-contrast scans, but never reduce an already contrasty image:
   // the floor is 1.0 so auto-enhance can only improve (or leave) contrast.

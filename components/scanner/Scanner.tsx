@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ArrowLeft, FilePlus2, Loader2, ScanHeart } from "lucide-react";
+import { ArrowLeft, Eye, FilePlus2, Loader2, ScanHeart } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet } from "@/components/ui/sheet";
 import { AddSourcePad } from "./AddSourcePad";
@@ -10,6 +10,8 @@ import { CameraCapture } from "./CameraCapture";
 import { PageEditor } from "./PageEditor";
 import { PagesGrid } from "./PagesGrid";
 import { ExportSheet } from "./ExportSheet";
+import { PaperBulkControl } from "./PaperBulkControl";
+import { PreviewSheet } from "./PreviewSheet";
 import { computeAutoAdjust, detectDocBoundary, fileToSrc } from "@/lib/image";
 import { uid } from "@/lib/utils";
 import { NEUTRAL_ADJUST } from "@/lib/types";
@@ -20,7 +22,7 @@ import {
   saveDocument,
 } from "@/lib/db";
 import type { DocMeta, StoredDoc, StoredPage } from "@/lib/db";
-import type { Adjust, Point, ScanPage } from "@/lib/types";
+import type { Adjust, PaperShape, Point, ScanPage } from "@/lib/types";
 
 /** Turn an in-memory page into a persisted record, reusing the cached image
  *  bytes when possible and otherwise fetching from the object URL. */
@@ -80,6 +82,7 @@ export function Scanner() {
   const [showAdd, setShowAdd] = React.useState(false);
   const [showCapture, setShowCapture] = React.useState(false);
   const [showExport, setShowExport] = React.useState(false);
+  const [showPreview, setShowPreview] = React.useState(false);
   const [adding, setAdding] = React.useState(false);
 
   // Persistence / multi-document state.
@@ -126,7 +129,9 @@ export function Scanner() {
       ];
     }
     let adjust: Adjust = { ...NEUTRAL_ADJUST };
-    let shadow = false;
+    // On by default: background flattening is a near no-op on an already-white,
+    // evenly lit page, and it is what keeps the paper white under a colour cast.
+    let shadow = true;
     try {
       const res = await computeAutoAdjust(src);
       adjust = res.adjust;
@@ -169,6 +174,11 @@ export function Scanner() {
 
   const updatePage = React.useCallback((id: string, patch: Partial<ScanPage>) => {
     setPages((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  }, []);
+
+  /** Set one paper size across the whole document. */
+  const applyPaperToAll = React.useCallback((paper: PaperShape) => {
+    setPages((prev) => prev.map((p) => ({ ...p, paper })));
   }, []);
 
   const deletePage = React.useCallback((id: string) => {
@@ -356,6 +366,12 @@ export function Scanner() {
         </div>
       )}
 
+      {!restoring && pages.length > 0 && (
+        <div className="mb-5 rounded-xl border border-border bg-card p-2">
+          <PaperBulkControl pages={pages} onApply={applyPaperToAll} />
+        </div>
+      )}
+
       {restoring ? (
         <p className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" /> Đang mở tài liệu…
@@ -408,19 +424,29 @@ export function Scanner() {
       )}
 
       <div className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-background/90 p-3 backdrop-blur">
-        <div className="mx-auto flex max-w-4xl gap-3">
+        <div className="mx-auto flex max-w-4xl flex-wrap gap-2">
           <Button
             variant="secondary"
             size="lg"
-            className="flex-1"
+            className="min-w-[8.5rem] flex-1"
             onClick={() => setShowAdd(true)}
           >
             <FilePlus2 className="h-5 w-5" />
             Thêm trang
           </Button>
           <Button
+            variant="secondary"
             size="lg"
-            className="flex-1"
+            className="min-w-[8rem] flex-1"
+            disabled={pages.length === 0}
+            onClick={() => setShowPreview(true)}
+          >
+            <Eye className="h-5 w-5" />
+            Xem trước
+          </Button>
+          <Button
+            size="lg"
+            className="min-w-[9rem] flex-1"
             disabled={pages.length === 0}
             onClick={() => setShowExport(true)}
           >
@@ -468,6 +494,7 @@ export function Scanner() {
             updatePage(editing.id, patch);
             setEditingId(null);
           }}
+          onApplyToAll={applyPaperToAll}
           onClose={() => setEditingId(null)}
         />
       )}
@@ -476,6 +503,17 @@ export function Scanner() {
         open={showExport}
         onClose={() => setShowExport(false)}
         pages={pages}
+      />
+
+      <PreviewSheet
+        open={showPreview}
+        onClose={() => setShowPreview(false)}
+        pages={pages}
+        onApplyPaperToAll={applyPaperToAll}
+        onExport={() => {
+          setShowPreview(false);
+          setShowExport(true);
+        }}
       />
     </div>
   );
