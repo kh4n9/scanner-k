@@ -1,11 +1,53 @@
 import { applyFilterRgba, autoAdjust, isNeutralFilter } from "./image-pixels";
+import { withRenderSlot } from "./render-queue";
 import type { Adjust, FilterMode, PaperShape, Point, Rotate } from "./types";
 import { warpInWorker } from "./warpWorker";
 
+// Decoded sources, keyed by `src`. Without this every render decodes the JPEG
+// again from scratch, and the same page gets rendered by the grid, the editor
+// preview, the document preview and the export. The budget is in decoded pixels
+// rather than entries because that is what actually costs memory (~4 bytes each):
+// 8M pixels is about 32 MB, enough for the handful of pages on screen without
+// giving a phone a reason to kill the tab.
+const DECODE_CACHE_PIXELS = 8_000_000;
+const imageCache = new Map<string, HTMLImageElement>();
+let cachedPixels = 0;
+
+function cacheImage(src: string, image: HTMLImageElement) {
+  const px = image.naturalWidth * image.naturalHeight;
+  imageCache.set(src, image);
+  cachedPixels += px;
+  while (cachedPixels > DECODE_CACHE_PIXELS && imageCache.size > 1) {
+    const oldest = imageCache.keys().next().value as string | undefined;
+    if (oldest === undefined || oldest === src) break;
+    const dropped = imageCache.get(oldest);
+    imageCache.delete(oldest);
+    if (dropped) cachedPixels -= dropped.naturalWidth * dropped.naturalHeight;
+  }
+}
+
+/** Drop a page's decoded source when its object URL is revoked. */
+export function evictImage(src: string) {
+  const dropped = imageCache.get(src);
+  if (!dropped) return;
+  imageCache.delete(src);
+  cachedPixels -= dropped.naturalWidth * dropped.naturalHeight;
+}
+
 export function loadImage(src: string): Promise<HTMLImageElement> {
+  const hit = imageCache.get(src);
+  if (hit) {
+    // Re-insert so the map's order stays least-recently-used.
+    imageCache.delete(src);
+    imageCache.set(src, hit);
+    return Promise.resolve(hit);
+  }
   return new Promise((resolve, reject) => {
     const image = new Image();
-    image.onload = () => resolve(image);
+    image.onload = () => {
+      cacheImage(src, image);
+      resolve(image);
+    };
     image.onerror = () => reject(new Error("Không thể đọc hình ảnh."));
     image.src = src;
   });
@@ -720,19 +762,7 @@ async function tryWorkerWarp(
   }
 }
 
-export async function warpPoly({
-  src,
-  boundary,
-  paper,
-  filter,
-  adjust,
-  maxDim,
-  shadow,
-  sharpen,
-  renderScale,
-  rotation = 0,
-  dewarpStrength = 0,
-}: {
+type WarpPolyArgs = {
   src: string;
   boundary?: Point[];
   paper: PaperShape;
@@ -748,10 +778,33 @@ export async function warpPoly({
   /** Rotate the whole document (source + boundary) clockwise by 0/90/180/270 so
    *  the warped page is upright. Applied before the perspective warp. */
   rotation?: Rotate;
-  /** Page-curl dewarp strength in [-1, 1]; when set it bypasses the Web Worker
-   *  so the curve correction stays on the main-thread sampling path. */
+  /** Page-curl dewarp strength in [-1, 1]. */
   dewarpStrength?: number;
-}): Promise<{ canvas: HTMLCanvasElement; width: number; height: number }> {
+};
+
+export async function warpPoly(
+  args: WarpPolyArgs,
+): Promise<{ canvas: HTMLCanvasElement; width: number; height: number }> {
+  // Single choke point for the memory bound: every render of every page, from
+  // the grid to an export, waits for one of a small number of shared slots. A
+  // long document therefore renders in waves rather than all at once, which is
+  // what keeps a 50+ page scan from killing the tab. See lib/render-queue.ts.
+  return withRenderSlot(() => renderPoly(args));
+}
+
+async function renderPoly({
+  src,
+  boundary,
+  paper,
+  filter,
+  adjust,
+  maxDim,
+  shadow,
+  sharpen,
+  renderScale,
+  rotation = 0,
+  dewarpStrength = 0,
+}: WarpPolyArgs): Promise<{ canvas: HTMLCanvasElement; width: number; height: number }> {
   const image = await loadImage(src);
   const iw = image.naturalWidth;
   const ih = image.naturalHeight;

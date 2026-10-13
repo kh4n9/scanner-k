@@ -12,7 +12,7 @@ import { PagesGrid } from "./PagesGrid";
 import { ExportSheet } from "./ExportSheet";
 import { PaperBulkControl } from "./PaperBulkControl";
 import { PreviewSheet } from "./PreviewSheet";
-import { computeAutoAdjust, detectDocBoundary, fileToSrc } from "@/lib/image";
+import { computeAutoAdjust, detectDocBoundary, evictImage, fileToSrc } from "@/lib/image";
 import { uid } from "@/lib/utils";
 import { NEUTRAL_ADJUST } from "@/lib/types";
 import {
@@ -55,7 +55,10 @@ async function toStored(p: ScanPage): Promise<StoredPage> {
 }
 
 function revokePages(ps: ScanPage[]) {
-  for (const p of ps) URL.revokeObjectURL(p.src);
+  for (const p of ps) {
+    URL.revokeObjectURL(p.src);
+    evictImage(p.src);
+  }
 }
 
 function restorePages(stored: StoredPage[]): ScanPage[] {
@@ -184,7 +187,10 @@ export function Scanner() {
   const deletePage = React.useCallback((id: string) => {
     setPages((prev) => {
       const target = prev.find((p) => p.id === id);
-      if (target) URL.revokeObjectURL(target.src);
+      if (target) {
+        URL.revokeObjectURL(target.src);
+        evictImage(target.src);
+      }
       return prev.filter((p) => p.id !== id);
     });
   }, []);

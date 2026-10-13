@@ -22,6 +22,14 @@ import { cn } from "@/lib/utils";
  * three can never disagree. Give the caller-supplied box a definite height (an
  * `aspect-*` cell, a `h-*` wrapper) and the sheet fills it as far as its ratio
  * allows.
+ *
+ * Only pages near the viewport are rendered, and a page drops its rendered image
+ * again once it scrolls away. A 53-page document would otherwise mount 53 sheets
+ * here AND 53 thumbnails in the grid, keeping ~100 decoded previews alive and
+ * putting every one of them through the warp at once — which is what killed the
+ * tab on iOS. Together with the shared render slots (lib/render-queue.ts) and the
+ * decoded-source cache (lib/image.ts), how long the document is no longer
+ * decides how much memory it takes.
  */
 export function PagePreview({
   page,
@@ -39,6 +47,12 @@ export function PagePreview({
   className?: string;
 }) {
   const [shot, setShot] = React.useState<string | null>(null);
+  const hostRef = React.useRef<HTMLDivElement>(null);
+  // Without an IntersectionObserver (very old browsers) every page counts as in
+  // range, which is the previous behaviour.
+  const [nearView, setNearView] = React.useState(
+    () => typeof IntersectionObserver === "undefined",
+  );
   // Re-render only when something that changes the rendered pixels changes.
   const deps = React.useMemo(
     () =>
@@ -65,8 +79,27 @@ export function PagePreview({
   );
 
   React.useEffect(() => {
+    const el = hostRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(
+      (entries) => setNearView(entries.some((e) => e.isIntersecting)),
+      { rootMargin: "240px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  React.useEffect(() => {
+    // Out of range: nothing to render. The image element is unmounted below too,
+    // which is what actually releases the decoded preview — no state to clear,
+    // and the string stays ready for when the page scrolls back into range.
+    if (!nearView) return;
     let active = true;
     const timer = setTimeout(() => {
+      if (!active) return;
+      // warpPoly takes a render slot itself, so this must NOT wrap it in another
+      // one: two nesting callers would each hold a slot while waiting for a
+      // second, and the queue would wedge with nothing ever rendering.
       warpPoly({
         src: page.src,
         boundary: page.boundary,
@@ -91,12 +124,15 @@ export function PagePreview({
       clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page.src, deps, maxDim, debounceMs]);
+  }, [nearView, page.src, deps, maxDim, debounceMs]);
 
   return (
-    <div className={cn("flex h-full w-full min-h-0 flex-col items-center gap-1.5", className)}>
+    <div
+      ref={hostRef}
+      className={cn("flex h-full w-full min-h-0 flex-col items-center gap-1.5", className)}
+    >
       <div className="flex min-h-0 w-full flex-1 items-center justify-center">
-        {shot ? (
+        {nearView && shot ? (
           // The source is a data URL rendered locally on a canvas, so there is no
           // remote image for next/image to optimise; a plain img also keeps the
           // intrinsic paper ratio, which is what lets the sheet fit uncropped.
