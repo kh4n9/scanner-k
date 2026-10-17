@@ -27,7 +27,9 @@ export function ExportSheet({
   pages: ScanPage[];
 }) {
   const [format, setFormat] = React.useState<ExportFormat>("pdf");
-  const [quality, setQuality] = React.useState(0.8);
+  // 0.9 instead of 0.8: at the exported DPI the difference is mostly JPEG
+  // ringing around small text, which is exactly the detail a scan should keep.
+  const [quality, setQuality] = React.useState(0.9);
   const [dpi, setDpi] = React.useState(200);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);

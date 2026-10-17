@@ -7,8 +7,9 @@ import { warpInWorker } from "./warpWorker";
 // again from scratch, and the same page gets rendered by the grid, the editor
 // preview, the document preview and the export. The budget is in decoded pixels
 // rather than entries because that is what actually costs memory (~4 bytes each):
-// 8M pixels is about 32 MB, enough for the handful of pages on screen without
-// giving a phone a reason to kill the tab.
+// 8M pixels is about 32 MB — one 3000-px master scan (6.75M) fits, which is what
+// matters while a page is being rendered, without giving a phone a reason to
+// kill the tab.
 const DECODE_CACHE_PIXELS = 8_000_000;
 const imageCache = new Map<string, HTMLImageElement>();
 let cachedPixels = 0;
@@ -1003,7 +1004,12 @@ export function canvasToBlob(
   });
 }
 
-export async function fileToSrc(file: File, maxDim = 2200): Promise<string> {
+// Keep enough pixels for a 200-DPI A4 page. The sheet usually occupies only
+// part of the frame, so a 3000-px master still leaves ~2000 px across the page
+// after the crop — close to native at 200 DPI. The old 2200 cap threw that
+// detail away before the perspective warp, and no later processing (upscaling
+// or sharpening) can bring it back.
+export async function fileToSrc(file: File, maxDim = 3000): Promise<string> {
   const url = URL.createObjectURL(file);
   try {
     const image = await loadImage(url);
@@ -1018,7 +1024,9 @@ export async function fileToSrc(file: File, maxDim = 2200): Promise<string> {
     const ctx = canvas.getContext("2d")!;
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(image, 0, 0, outW, outH);
-    const blob = await canvasToBlob(canvas, 0.9);
+    // The master is re-encoded once and then decoded for every render/export.
+    // 0.92 keeps JPEG's generational loss negligible at this size.
+    const blob = await canvasToBlob(canvas, 0.92);
     return URL.createObjectURL(blob);
   } finally {
     URL.revokeObjectURL(url);

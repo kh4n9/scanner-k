@@ -4,7 +4,7 @@ import * as React from "react";
 import { Sheet } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
-import { FlipHorizontal2, ScanLine, CameraOff, Check } from "lucide-react";
+import { FlipHorizontal2, ScanLine, CameraOff, Check, Loader2 } from "lucide-react";
 
 export function CameraCapture({
   onClose,
@@ -21,6 +21,7 @@ export function CameraCapture({
   const [error, setError] = React.useState<string | null>(null);
   const [ready, setReady] = React.useState(false);
   const [flash, setFlash] = React.useState(false);
+  const [capturing, setCapturing] = React.useState(false);
 
   const stop = React.useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -53,8 +54,16 @@ export function CameraCapture({
         return;
       }
       try {
+        // Ask for 4K: the stream is a *preference* (the browser falls back to
+        // whatever the device supports), but on phones that can do it this
+        // doubles the linear resolution of the fallback frame capture. The
+        // still-photo path in `capture` is even higher when available.
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: facing, width: { ideal: 1920 } },
+          video: {
+            facingMode: facing,
+            width: { ideal: 3840 },
+            height: { ideal: 2160 },
+          },
           audio: false,
         });
         if (cancelled) {
@@ -80,29 +89,62 @@ export function CameraCapture({
     };
   }, [facing, stop]);
 
-  const capture = () => {
+  const pulseFlash = () => {
+    setFlash(true);
+    setTimeout(() => setFlash(false), 600);
+  };
+
+  const capture = async () => {
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || capturing) return;
     const w = video.videoWidth;
     const h = video.videoHeight;
     if (!w || !h) return;
-    const canvas = document.createElement("canvas");
-    canvas.width = w;
-    canvas.height = h;
-    canvas.getContext("2d")!.drawImage(video, 0, 0, w, h);
-    canvas.toBlob(
-      (blob) => {
-        if (!blob) return;
-        setFlash(true);
-        setTimeout(() => setFlash(false), 600);
-        const file = new File([blob], `scan-${Date.now()}.jpg`, {
-          type: "image/jpeg",
-        });
-        onCaptured(file);
-      },
-      "image/jpeg",
-      0.9,
-    );
+    setCapturing(true);
+    try {
+      // Prefer a real still photo: the video stream is capped at 1080p on most
+      // phones, while takePhoto() can return the sensor's full resolution.
+      // That extra pixel detail is what keeps small print crisp in the export;
+      // the frame path below is the fallback where takePhoto is unsupported.
+      const track = streamRef.current?.getVideoTracks()[0];
+      const ImageCaptureCtor = (
+        window as Window & {
+          ImageCapture?: new (t: MediaStreamTrack) => {
+            takePhoto: () => Promise<Blob>;
+          };
+        }
+      ).ImageCapture;
+      if (track && ImageCaptureCtor) {
+        try {
+          const blob = await new ImageCaptureCtor(track).takePhoto();
+          if (blob && blob.size > 0) {
+            const type = blob.type || "image/jpeg";
+            const ext = type === "image/png" ? "png" : "jpg";
+            pulseFlash();
+            onCaptured(new File([blob], `scan-${Date.now()}.${ext}`, { type }));
+            return;
+          }
+        } catch {
+          // takePhoto is unavailable for this track — fall through to a frame.
+        }
+      }
+
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext("2d")!.drawImage(video, 0, 0, w, h);
+      const blob = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob(resolve, "image/jpeg", 0.92),
+      );
+      if (blob) {
+        pulseFlash();
+        onCaptured(
+          new File([blob], `scan-${Date.now()}.jpg`, { type: "image/jpeg" }),
+        );
+      }
+    } finally {
+      setCapturing(false);
+    }
   };
 
   return (
@@ -117,9 +159,18 @@ export function CameraCapture({
             <FlipHorizontal2 className="h-5 w-5" />
           </IconButton>
 
-          <Button size="lg" className="min-w-28" onClick={capture} disabled={!ready}>
-            <ScanLine className="h-5 w-5" />
-            Chụp
+          <Button
+            size="lg"
+            className="min-w-28"
+            onClick={capture}
+            disabled={!ready || capturing}
+          >
+            {capturing ? (
+              <Loader2 className="h-5 w-5 animate-spin" />
+            ) : (
+              <ScanLine className="h-5 w-5" />
+            )}
+            {capturing ? "Đang chụp…" : "Chụp"}
           </Button>
 
           <span className="w-10" />

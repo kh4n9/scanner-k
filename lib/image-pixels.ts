@@ -388,7 +388,20 @@ function normalizeBackground(d: Uint8ClampedArray, w: number, h: number) {
 }
 
 // Light unsharp mask: out = orig + amount*(orig - blur).
-function unsharpMask(d: Uint8ClampedArray, w: number, h: number, amount = 0.7) {
+//
+// The dead zone is what lets the amount be high enough to crisp up the text of
+// a scan upsampled to the export DPI without also amplifying paper grain: only
+// differences larger than `threshold` levels are boosted, and the boost is
+// reduced by that threshold so the transition stays smooth. Text edges clear it
+// easily; sensor noise left in the flats (background flattening can amplify it
+// up to MAX_BG_GAIN) mostly does not.
+function unsharpMask(
+  d: Uint8ClampedArray,
+  w: number,
+  h: number,
+  amount = 1.0,
+  threshold = 2,
+) {
   const n = w * h;
   const channel = new Float32Array(n);
   for (let ch = 0; ch < 3; ch++) {
@@ -396,8 +409,10 @@ function unsharpMask(d: Uint8ClampedArray, w: number, h: number, amount = 0.7) {
     const blur = boxBlur(channel, w, h, 1);
     for (let p = 0; p < n; p++) {
       const i = p * 4;
-      const v = d[i + ch] + amount * (d[i + ch] - blur[p]);
-      d[i + ch] = clamp(v, 0, 255);
+      const diff = d[i + ch] - blur[p];
+      const boost =
+        diff > threshold ? diff - threshold : diff < -threshold ? diff + threshold : 0;
+      d[i + ch] = clamp(d[i + ch] + amount * boost, 0, 255);
     }
   }
 }
