@@ -125,7 +125,8 @@ export function PageEditor({
   // Interior guide grid: bilinear on the 4 outer corners, so it deforms
   // evenly (and automatically) as the border stretches. Not interactive.
   const gridLines = React.useMemo(() => {
-    if (!nat || !box || boundary.length < 4) return [];
+    const empty = { lines: [] as string[], ext: null as Record<"tl" | "tr" | "br" | "bl", Point> | null };
+    if (!nat || !box || boundary.length < 4) return empty;
     const ext = { tl: boundary[0], tr: boundary[0], br: boundary[0], bl: boundary[0] };
     let minSum = Infinity,
       maxSum = -Infinity,
@@ -181,9 +182,43 @@ export function PageEditor({
       }
       lines.push(pts.join(" "));
     }
-    return lines;
+    return { lines, ext: { tl, tr, br, bl } };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boundary, nat, box, dispW, dispH, offX, offY]);
+
+  // The four edges as they will actually be warped: a quadratic bow matching
+  // the measured sagitta, drawn dashed over the photo so it is visible whether
+  // a curl was found, and where. Same construction as `curvedEdge` in
+  // lib/image.ts, in display coordinates.
+  const curvePaths = React.useMemo(() => {
+    const ext = gridLines.ext;
+    if (!ext || boundary.length !== 4 || !curves.some((c) => c !== 0)) return [];
+    const { tl, tr, br, bl } = ext;
+    const cx = (tl.x + tr.x + br.x + bl.x) / 4;
+    const cy = (tl.y + tr.y + br.y + bl.y) / 4;
+    const edge = (a: Point, b: Point, s: number): string | null => {
+      if (Math.abs(s) < 0.004) return null;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 1) return null;
+      let nx = -dy / len;
+      let ny = dx / len;
+      const mx = (a.x + b.x) / 2;
+      const my = (a.y + b.y) / 2;
+      if ((cx - mx) * nx + (cy - my) * ny < 0) {
+        nx = -nx;
+        ny = -ny;
+      }
+      return `M ${a.x} ${a.y} Q ${mx + 2 * s * len * nx} ${my + 2 * s * len * ny} ${b.x} ${b.y}`;
+    };
+    return [
+      edge(tl, tr, curves[0]),
+      edge(tr, br, curves[1]),
+      edge(bl, br, curves[2]),
+      edge(tl, bl, curves[3]),
+    ].filter((d): d is string => d !== null);
+  }, [gridLines, curves, boundary.length]);
 
   const updatePoint = React.useCallback(
     (index: number, px: number, py: number) => {
@@ -394,7 +429,17 @@ export function PageEditor({
                   mask="url(#scan-dim)"
                 />
                 <polygon points={polygonPoints} fill="none" stroke="var(--primary)" strokeWidth={2} />
-                {gridLines.map((pts, i) => (
+                {curvePaths.map((d, i) => (
+                  <path
+                    key={`curve-${i}`}
+                    d={d}
+                    fill="none"
+                    stroke="rgba(255,255,255,0.95)"
+                    strokeWidth={1.5}
+                    strokeDasharray="5 3"
+                  />
+                ))}
+                {gridLines.lines.map((pts, i) => (
                   <polyline
                     key={i}
                     points={pts}
@@ -647,9 +692,19 @@ export function PageEditor({
               Uốn thẳng mép cong
             </button>
           </div>
-          {boundary.length > 4 && (
+          {boundary.length > 4 ? (
             <p className="mt-2 text-[11px] text-muted-foreground">
               Đang uốn theo các điểm bạn thêm trên viền.
+            </p>
+          ) : (
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              {hasCurves
+                ? `Độ cong đo được — trên ${(curves[0] * 100).toFixed(1)}% · phải ${(
+                    curves[1] * 100
+                  ).toFixed(1)}% · dưới ${(curves[2] * 100).toFixed(1)}% · trái ${(
+                    curves[3] * 100
+                  ).toFixed(1)}% (đường nét đứt)`
+                : "Chưa đo được mép cong nào — nếu mép giấy bị cong, bấm “Tự dò lại”."}
             </p>
           )}
           <div className="mt-3">

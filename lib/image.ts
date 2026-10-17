@@ -367,8 +367,15 @@ async function getDocComponent(src: string, maxSide: number) {
   return { pixels: best.pixels, w, h };
 }
 
+// Long side of the frame detection works in. 720 rather than 360: the edge
+// curvature is read off this mask, and halving the working resolution halves
+// how many pixels a bow spans while the threshold noise stays about a pixel —
+// which is what decides whether a modest curl is measurable at all. The flood
+// fill is linear in the mask, so the cost is a few milliseconds.
+const DETECT_MAX_SIDE = 720;
+
 export async function detectDocBoundary(src: string): Promise<DetectResult> {
-  const { pixels, w, h } = await getDocComponent(src, 360);
+  const { pixels, w, h } = await getDocComponent(src, DETECT_MAX_SIDE);
   if (!pixels || pixels.length < 4) {
     return { boundary: FULL_BOUNDARY.slice(), curves: [0, 0, 0, 0] };
   }

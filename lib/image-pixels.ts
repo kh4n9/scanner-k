@@ -191,9 +191,6 @@ export function autoAdjust(mean: number, p05: number, p95: number): Adjust {
   };
 }
 
-// How many stations along an edge the silhouette is sampled at. Enough to see
-// a paper curl, coarse enough that a ragged threshold boundary averages out.
-const CURVE_BINS = 24;
 // Smallest bow worth correcting, as a fraction of the edge's own length. On a
 // 2000-px page edge this is ~10 px — a strip of desk thin enough to look like a
 // printing artefact, and exactly what the user notices. The IQR and sign
@@ -231,7 +228,7 @@ export function measureEdgeCurves(points: Point[], corners: Point[]): EdgeCurves
     const dx = b.x - a.x;
     const dy = b.y - a.y;
     const len = Math.hypot(dx, dy);
-    if (len < 1e-6) continue;
+    if (len < 16) continue;
     const tx = dx / len;
     const ty = dy / len;
     // Normal oriented toward the page centre, so a positive reading always
@@ -245,39 +242,113 @@ export function measureEdgeCurves(points: Point[], corners: Point[]): EdgeCurves
       ny = -ny;
     }
 
-    const nearest = new Float32Array(CURVE_BINS).fill(Infinity);
+    // One station per pixel along the edge. Coarse bins would take the MIN over
+    // a dozen noisy columns, and that minimum sits a couple of pixels inside
+    // the real edge — which is exactly how a modest bow gets averaged away.
+    const cols = clamp(Math.round(len), 16, 256);
+    const sil = new Float64Array(cols).fill(NaN);
     for (let i = 0; i < points.length; i++) {
       const px = points[i].x - a.x;
       const py = points[i].y - a.y;
       const u = (px * tx + py * ty) / len;
       if (u < 0 || u >= 1) continue;
       const d = px * nx + py * ny;
-      const bin = (u * CURVE_BINS) | 0;
-      if (d < nearest[bin]) nearest[bin] = d;
+      const c = (u * cols) | 0;
+      if (Number.isNaN(sil[c]) || d < sil[c]) sil[c] = d;
+    }
+    // Fill columns the mask never reached, so the profile is continuous.
+    let last = NaN;
+    for (let c = 0; c < cols; c++) {
+      if (Number.isNaN(sil[c])) sil[c] = last;
+      else last = sil[c];
+    }
+    last = NaN;
+    for (let c = cols - 1; c >= 0; c--) {
+      if (Number.isNaN(sil[c])) sil[c] = last;
+      else last = sil[c];
+    }
+    if (Number.isNaN(sil[0])) continue;
+
+    // The silhouette carries a pixel or two of threshold noise per column.
+    const radius = Math.max(1, Math.round(cols / 48));
+    const smooth = new Float64Array(cols);
+    for (let c = 0; c < cols; c++) {
+      let sum = 0;
+      let n = 0;
+      for (let k = -radius; k <= radius; k++) {
+        const j = c + k;
+        if (j < 0 || j >= cols) continue;
+        sum += sil[j];
+        n++;
+      }
+      smooth[c] = sum / n;
     }
 
-    // The middle 60% of the edge: the corner regions belong to the two adjacent
-    // edges and would bias the reading toward zero.
-    const lo = Math.floor(CURVE_BINS * 0.2);
-    const hi = Math.ceil(CURVE_BINS * 0.8);
-    const vals: number[] = [];
-    for (let i = lo; i < hi; i++) {
-      if (Number.isFinite(nearest[i])) vals.push(nearest[i]);
+    // Take out only the TILT (the best-fit slope) over the middle 80%, pivoting
+    // about the middle of the edge. A chord that is a few pixels off the real
+    // edge reads as a tilted line, not as a bow, and must not be mistaken for
+    // one. The level is deliberately kept: `d` is measured from the chord, so
+    // its offset from zero is the bow itself, and subtracting the intercept
+    // would throw the bow away with it.
+    const fitLo = Math.floor(cols * 0.1);
+    const fitHi = Math.ceil(cols * 0.9);
+    let sx = 0;
+    let sy = 0;
+    let sxx = 0;
+    let sxy = 0;
+    let n = 0;
+    for (let c = fitLo; c < fitHi; c++) {
+      sx += c;
+      sy += smooth[c];
+      sxx += c * c;
+      sxy += c * smooth[c];
+      n++;
     }
-    if (vals.length < 4) continue;
-    vals.sort((p, q) => p - q);
-    const q = (t: number) =>
-      vals[Math.min(vals.length - 1, Math.max(0, Math.round(t * (vals.length - 1))))];
-    const med = q(0.5);
-    const iqr = q(0.75) - q(0.25);
-    const s = med / len;
-    if (Math.abs(s) < CURVE_MIN || Math.abs(s) > CURVE_MAX) continue;
-    // A real bow is a smooth arc: the stations agree on its size and its
-    // direction. Scattered disagreement means the reading is noise.
-    if (iqr > 0.5 * Math.abs(med)) continue;
+    if (n < 4) continue;
+    const denom = n * sxx - sx * sx;
+    const slope = denom !== 0 ? (n * sxy - sx * sy) / denom : 0;
+    const center = (cols - 1) / 2;
+    const level = (c: number) => slope * (c - center);
+
+    // The sagitta is defined at the middle of the edge, so read it there, and
+    // use the surrounding stations only to judge whether it is real.
+    const lo = Math.floor(cols * 0.2);
+    const hi = Math.ceil(cols * 0.8);
+    const midLo = Math.floor(cols * 0.4);
+    const midHi = Math.ceil(cols * 0.6);
+    let bowSum = 0;
+    let bowN = 0;
+    let roughSum = 0;
+    let roughN = 0;
     let agree = 0;
-    for (const v of vals) if (v > 0 === med > 0) agree++;
-    if (agree < vals.length * 0.7) continue;
+    let total = 0;
+    for (let c = lo; c < hi; c++) {
+      const res = smooth[c] - level(c);
+      if (c >= midLo && c < midHi) {
+        bowSum += res;
+        bowN++;
+      }
+      if (c > lo && c < hi - 1) {
+        roughSum += Math.abs(smooth[c - 1] - 2 * smooth[c] + smooth[c + 1]);
+        roughN++;
+      }
+    }
+    if (bowN === 0 || roughN === 0) continue;
+    const bow = bowSum / bowN;
+    const rough = roughSum / roughN;
+    for (let c = lo; c < hi; c++) {
+      const res = smooth[c] - level(c);
+      if (res > 0 === bow > 0) agree++;
+      total++;
+    }
+
+    const s = bow / len;
+    if (Math.abs(s) < CURVE_MIN || Math.abs(s) > CURVE_MAX) continue;
+    // A real bow is a smooth arc that stands clear of the profile's own
+    // roughness, with the stations agreeing on its direction. That is what
+    // keeps a ragged threshold edge or a stray shadow from bending the page.
+    if (Math.abs(bow) < 2 * rough) continue;
+    if (agree < total * 0.75) continue;
 
     out[e] = s;
   }
