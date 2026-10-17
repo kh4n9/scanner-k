@@ -1,4 +1,5 @@
 import { PDFDocument } from "pdf-lib";
+import { activeCurves } from "./types";
 import type { PdfOptions, ScanPage } from "./types";
 import { canvasToBlob, warpPoly } from "./image";
 
@@ -22,6 +23,7 @@ export async function buildPdfFromPages(
       sharpen: page.sharpen,
       rotation: page.rotation ?? 0,
       dewarpStrength: page.dewarpStrength ?? 0,
+      curves: activeCurves(page),
       renderScale,
     });
 

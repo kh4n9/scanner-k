@@ -4,7 +4,7 @@
 // filter pipeline: the main-thread path in `image.ts` calls `applyFilterRgba`
 // too, so a worker render and a main-thread render can never drift apart.
 
-import type { Adjust, FilterMode } from "./types";
+import type { Adjust, EdgeCurves, FilterMode, Point } from "./types";
 
 export function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -189,6 +189,99 @@ export function autoAdjust(mean: number, p05: number, p95: number): Adjust {
     contrast: clamp(128 / spread, 1.0, 1.8),
     saturation: 1.12,
   };
+}
+
+// How many stations along an edge the silhouette is sampled at. Enough to see
+// a paper curl, coarse enough that a ragged threshold boundary averages out.
+const CURVE_BINS = 24;
+// Smallest bow worth correcting, as a fraction of the edge's own length. On a
+// 2000-px page edge this is ~10 px — a strip of desk thin enough to look like a
+// printing artefact, and exactly what the user notices. The IQR and sign
+// agreement filters below, not this floor, are what reject mask noise; a false
+// positive only stretches the page by a fraction of a percent, while a missed
+// bow leaves the background showing.
+const CURVE_MIN = 0.005;
+// Largest bow we believe. Real paper curl stays far below it; anything bigger
+// means the "edge" the detector found is not the paper (a table edge, a shadow),
+// and warping by it would wreck the page.
+const CURVE_MAX = 0.25;
+
+/**
+ * How far each paper edge bows away from the straight chord between its two
+ * corners, as a signed fraction of the edge length (positive = inward, see
+ * `EdgeCurves`). Pure, so the harness can exercise the exact numbers that ship.
+ *
+ * `points` is the document's own pixel set (the detected component, or an
+ * OpenCV contour) and `corners` its 4 corners in the same coordinate space.
+ * Only the OUTERMOST pixel per station is kept — the silhouette — so the page's
+ * interior can never drag the estimate; and a bow is only accepted when the
+ * middle of the edge agrees on it (see the filters below), which is what keeps
+ * a stray shadow or a single noisy threshold pixel from bending the page.
+ */
+export function measureEdgeCurves(points: Point[], corners: Point[]): EdgeCurves {
+  const out: EdgeCurves = [0, 0, 0, 0];
+  if (points.length < 8 || corners.length < 4) return out;
+
+  const cx = (corners[0].x + corners[1].x + corners[2].x + corners[3].x) / 4;
+  const cy = (corners[0].y + corners[1].y + corners[2].y + corners[3].y) / 4;
+
+  for (let e = 0; e < 4; e++) {
+    const a = corners[e];
+    const b = corners[(e + 1) % 4];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-6) continue;
+    const tx = dx / len;
+    const ty = dy / len;
+    // Normal oriented toward the page centre, so a positive reading always
+    // means "the paper is inside the chord" whatever the page's rotation is.
+    let nx = -ty;
+    let ny = tx;
+    const mx = (a.x + b.x) / 2;
+    const my = (a.y + b.y) / 2;
+    if ((cx - mx) * nx + (cy - my) * ny < 0) {
+      nx = -nx;
+      ny = -ny;
+    }
+
+    const nearest = new Float32Array(CURVE_BINS).fill(Infinity);
+    for (let i = 0; i < points.length; i++) {
+      const px = points[i].x - a.x;
+      const py = points[i].y - a.y;
+      const u = (px * tx + py * ty) / len;
+      if (u < 0 || u >= 1) continue;
+      const d = px * nx + py * ny;
+      const bin = (u * CURVE_BINS) | 0;
+      if (d < nearest[bin]) nearest[bin] = d;
+    }
+
+    // The middle 60% of the edge: the corner regions belong to the two adjacent
+    // edges and would bias the reading toward zero.
+    const lo = Math.floor(CURVE_BINS * 0.2);
+    const hi = Math.ceil(CURVE_BINS * 0.8);
+    const vals: number[] = [];
+    for (let i = lo; i < hi; i++) {
+      if (Number.isFinite(nearest[i])) vals.push(nearest[i]);
+    }
+    if (vals.length < 4) continue;
+    vals.sort((p, q) => p - q);
+    const q = (t: number) =>
+      vals[Math.min(vals.length - 1, Math.max(0, Math.round(t * (vals.length - 1))))];
+    const med = q(0.5);
+    const iqr = q(0.75) - q(0.25);
+    const s = med / len;
+    if (Math.abs(s) < CURVE_MIN || Math.abs(s) > CURVE_MAX) continue;
+    // A real bow is a smooth arc: the stations agree on its size and its
+    // direction. Scattered disagreement means the reading is noise.
+    if (iqr > 0.5 * Math.abs(med)) continue;
+    let agree = 0;
+    for (const v of vals) if (v > 0 === med > 0) agree++;
+    if (agree < vals.length * 0.7) continue;
+
+    out[e] = s;
+  }
+  return out;
 }
 
 // Flatten uneven lighting and make the paper white whatever the light looked
@@ -558,6 +651,210 @@ export function warpRgba(
       const w10 = fx * (1 - fy2);
       const w01 = (1 - fx) * fy2;
       const w11 = fx * fy2;
+      const oi = (y * outW + x) * 4;
+      out[oi] = src[i00] * w00 + src[i10] * w10 + src[i01] * w01 + src[i11] * w11;
+      out[oi + 1] = src[i00 + 1] * w00 + src[i10 + 1] * w10 + src[i01 + 1] * w01 + src[i11 + 1] * w11;
+      out[oi + 2] = src[i00 + 2] * w00 + src[i10 + 2] * w10 + src[i01 + 2] * w01 + src[i11 + 2] * w11;
+      out[oi + 3] = 255;
+    }
+  }
+  return out;
+}
+
+/**
+ * Per-output-pixel correction to add to the homography, one interleaved (dx,dy)
+ * pair per station along each edge. Built once per render (O(outW + outH)), so
+ * the warp itself never allocates.
+ */
+export type EdgeDeviations = {
+  /** Indexed by output column. */
+  top: Float32Array;
+  bottom: Float32Array;
+  /** Indexed by output row. */
+  left: Float32Array;
+  right: Float32Array;
+};
+
+// The four edge polylines travel as one flat buffer: for each of top, right,
+// bottom, left in turn, a point count followed by that many (x,y) pairs, all in
+// source-pixel space — the same domain as the homography.
+function parseEdges(edges: Float32Array): Point[][] {
+  const out: Point[][] = [];
+  let i = 0;
+  for (let s = 0; s < 4; s++) {
+    const n = edges[i++];
+    const seg: Point[] = new Array(n);
+    for (let k = 0; k < n; k++) {
+      seg[k] = { x: edges[i], y: edges[i + 1] };
+      i += 2;
+    }
+    out.push(seg);
+  }
+  return out;
+}
+
+// Walk a polyline by normalized arc length. The segments are short (a quad's
+// edge, or a Bezier resampled to a handful of points), so a linear scan per
+// lookup is cheaper than anything cleverer.
+function polylineSampler(seg: Point[]): (t: number) => Point {
+  const n = seg.length;
+  const cum = new Float64Array(n);
+  for (let i = 1; i < n; i++) {
+    cum[i] = cum[i - 1] + Math.hypot(seg[i].x - seg[i - 1].x, seg[i].y - seg[i - 1].y);
+  }
+  const total = cum[n - 1] || 1;
+  return (t: number) => {
+    const target = clamp(t, 0, 1) * total;
+    let i = 1;
+    while (i < n - 1 && cum[i] < target) i++;
+    const span = cum[i] - cum[i - 1];
+    const f = span > 0 ? (target - cum[i - 1]) / span : 0;
+    return {
+      x: seg[i - 1].x + (seg[i].x - seg[i - 1].x) * f,
+      y: seg[i - 1].y + (seg[i].y - seg[i - 1].y) * f,
+    };
+  };
+}
+
+/**
+ * Turn the four edge polylines into the correction the mesh warp adds on top of
+ * the homography: `deviation(u) = edgeCurve(u) - homography(u)` at the border.
+ *
+ * The homography stays the baseline rather than being replaced, because a
+ * bilinear (Coons) interior would bend straight lines and throw away the
+ * keystone correction an angled photo needs. Every deviation vanishes at the
+ * corners — the curves share the quad's corners — so no corner term is needed,
+ * and at `v = 0` the sampler lands exactly on the real (curved) top edge.
+ */
+export function buildEdgeDeviations(
+  h: number[],
+  edges: Float32Array,
+  outW: number,
+  outH: number,
+  logicalW: number,
+  logicalH: number,
+): EdgeDeviations {
+  const [top, right, bottom, left] = parseEdges(edges);
+  const topAt = polylineSampler(top);
+  const bottomAt = polylineSampler(bottom);
+  const leftAt = polylineSampler(left);
+  const rightAt = polylineSampler(right);
+
+  const at = (x: number, y: number): Point => {
+    const d = h[6] * x + h[7] * y + h[8];
+    return { x: (h[0] * x + h[1] * y + h[2]) / d, y: (h[3] * x + h[4] * y + h[5]) / d };
+  };
+
+  const devTop = new Float32Array(outW * 2);
+  const devBottom = new Float32Array(outW * 2);
+  for (let x = 0; x < outW; x++) {
+    const u = (x + 0.5) / outW;
+    const lx = u * logicalW;
+    const t = topAt(u);
+    const b = bottomAt(u);
+    const ht = at(lx, 0);
+    const hb = at(lx, logicalH);
+    devTop[2 * x] = t.x - ht.x;
+    devTop[2 * x + 1] = t.y - ht.y;
+    devBottom[2 * x] = b.x - hb.x;
+    devBottom[2 * x + 1] = b.y - hb.y;
+  }
+
+  const devLeft = new Float32Array(outH * 2);
+  const devRight = new Float32Array(outH * 2);
+  for (let y = 0; y < outH; y++) {
+    const v = (y + 0.5) / outH;
+    const ly = v * logicalH;
+    const l = leftAt(v);
+    const r = rightAt(v);
+    const hl = at(0, ly);
+    const hr = at(logicalW, ly);
+    devLeft[2 * y] = l.x - hl.x;
+    devLeft[2 * y + 1] = l.y - hl.y;
+    devRight[2 * y] = r.x - hr.x;
+    devRight[2 * y + 1] = r.y - hr.y;
+  }
+
+  return { top: devTop, bottom: devBottom, left: devLeft, right: devRight };
+}
+
+/**
+ * Perspective sample with the four edge deviations blended in — the same loop
+ * as `warpRgba`, plus the border correction that stretches a bowed paper edge
+ * out to the page rectangle. Weights are the bilinear ones, which is what makes
+ * the correction fade to zero over the interior and reach exactly the measured
+ * curve at each border.
+ */
+export function warpMeshRgba(
+  src: Uint8ClampedArray,
+  sw: number,
+  sh: number,
+  h: number[],
+  devs: EdgeDeviations,
+  outW: number,
+  outH: number,
+  logicalW: number,
+  logicalH: number,
+): Uint8ClampedArray {
+  const out = new Uint8ClampedArray(outW * outH * 4);
+  const { top, bottom, left, right } = devs;
+  const xStep = logicalW / outW;
+  const yStep = logicalH / outH;
+
+  const uArr = new Float64Array(outW);
+  const lxArr = new Float64Array(outW);
+  for (let x = 0; x < outW; x++) {
+    uArr[x] = (x + 0.5) / outW;
+    lxArr[x] = (x + 0.5) * xStep;
+  }
+
+  for (let y = 0; y < outH; y++) {
+    const v = (y + 0.5) / outH;
+    const ly = (y + 0.5) * yStep;
+    // The left/right corrections are constant along a row, so hoist them out.
+    const ldx = left[2 * y];
+    const ldy = left[2 * y + 1];
+    const rdx = right[2 * y];
+    const rdy = right[2 * y + 1];
+    const wTop = 1 - v;
+    const wBottom = v;
+    for (let x = 0; x < outW; x++) {
+      const lx = lxArr[x];
+      const u = uArr[x];
+      const d = h[6] * lx + h[7] * ly + h[8];
+      const wLeft = 1 - u;
+      const sx = clamp(
+        (h[0] * lx + h[1] * ly + h[2]) / d +
+          wTop * top[2 * x] +
+          wBottom * bottom[2 * x] +
+          wLeft * ldx +
+          u * rdx,
+        0,
+        sw - 1,
+      );
+      const sy = clamp(
+        (h[3] * lx + h[4] * ly + h[5]) / d +
+          wTop * top[2 * x + 1] +
+          wBottom * bottom[2 * x + 1] +
+          wLeft * ldy +
+          u * rdy,
+        0,
+        sh - 1,
+      );
+      const x0 = Math.floor(sx);
+      const y0 = Math.floor(sy);
+      const x1 = Math.min(x0 + 1, sw - 1);
+      const y1 = Math.min(y0 + 1, sh - 1);
+      const fx = sx - x0;
+      const fy = sy - y0;
+      const i00 = (y0 * sw + x0) * 4;
+      const i10 = (y0 * sw + x1) * 4;
+      const i01 = (y1 * sw + x0) * 4;
+      const i11 = (y1 * sw + x1) * 4;
+      const w00 = (1 - fx) * (1 - fy);
+      const w10 = fx * (1 - fy);
+      const w01 = (1 - fx) * fy;
+      const w11 = fx * fy;
       const oi = (y * outW + x) * 4;
       out[oi] = src[i00] * w00 + src[i10] * w10 + src[i01] * w01 + src[i11] * w11;
       out[oi + 1] = src[i00 + 1] * w00 + src[i10 + 1] * w10 + src[i01 + 1] * w01 + src[i11 + 1] * w11;

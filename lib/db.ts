@@ -4,7 +4,7 @@
 // is ephemeral and cannot survive a reload). Storing the image bytes keeps the
 // "all on-device, no upload" promise — nothing leaves the browser.
 
-import type { Adjust, FilterMode, PaperShape, Point, Rotate } from "./types";
+import type { Adjust, EdgeCurves, FilterMode, PaperShape, Point, Rotate } from "./types";
 
 export type StoredPage = {
   id: string;
@@ -17,6 +17,10 @@ export type StoredPage = {
   sharpen?: boolean;
   rotation: Rotate;
   dewarpStrength: number;
+  /** Measured bow of each paper edge (see `EdgeCurves`); absent on records
+   *  written before the feature, which is the same as "all straight". */
+  curves?: EdgeCurves;
+  curvesEnabled?: boolean;
   image: ArrayBuffer;
   mime: string;
 };

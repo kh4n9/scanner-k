@@ -2,7 +2,7 @@
 // thread. It only touches raw RGBA buffers (no DOM/canvas), so it works in a
 // plain worker. Typed via a local scope cast so it type-checks alongside the
 // DOM lib (no `lib=webworker` conflict).
-import { applyFilterRgba, warpRgba } from "./image-pixels";
+import { applyFilterRgba, buildEdgeDeviations, warpMeshRgba, warpRgba } from "./image-pixels";
 import type { Adjust, FilterMode } from "./types";
 
 type WarpRequest = {
@@ -12,6 +12,9 @@ type WarpRequest = {
   srcW: number;
   srcH: number;
   h: number[];
+  /** Four edge polylines, packed as `[count, x,y, ...]` per edge in
+   *  [top, right, bottom, left] order. Present ⇒ mesh warp. */
+  edges?: Float32Array;
   outW: number;
   outH: number;
   logicalW: number;
@@ -31,16 +34,28 @@ const scope = self as unknown as WorkerScope;
 
 function handleWarp(req: WarpRequest) {
   const src = new Uint8ClampedArray(req.src);
-  const out = warpRgba(
-    src,
-    req.srcW,
-    req.srcH,
-    req.h,
-    req.outW,
-    req.outH,
-    req.logicalW,
-    req.logicalH,
-  );
+  const out = req.edges
+    ? warpMeshRgba(
+        src,
+        req.srcW,
+        req.srcH,
+        req.h,
+        buildEdgeDeviations(req.h, req.edges, req.outW, req.outH, req.logicalW, req.logicalH),
+        req.outW,
+        req.outH,
+        req.logicalW,
+        req.logicalH,
+      )
+    : warpRgba(
+        src,
+        req.srcW,
+        req.srcH,
+        req.h,
+        req.outW,
+        req.outH,
+        req.logicalW,
+        req.logicalH,
+      );
   applyFilterRgba(out, req.outW, req.outH, req.filter, req.adjust, {
     shadow: req.shadow,
     sharpen: req.sharpen,

@@ -26,6 +26,32 @@ export type PaperShape =
   | { kind: "letter" }
   | { kind: "custom"; widthMm: number; heightMm: number };
 
+/** Signed normalized sagitta per edge, in the unrotated normalized frame:
+ *  [top, right, bottom, left]. Positive = the paper silhouette bows inward
+ *  (toward the page interior) relative to the chord between the edge's two
+ *  corners; negative = it bulges outward; 0 = straight. */
+export type EdgeCurves = [number, number, number, number];
+
+export const NO_CURVES: EdgeCurves = [0, 0, 0, 0];
+
+/** What the boundary detectors return: the 4 corner quad plus how far each of
+ *  its edges bows away from the straight chord (see `EdgeCurves`). */
+export interface DetectResult {
+  boundary: Point[];
+  curves: EdgeCurves;
+}
+
+/** The curvature a page should actually be warped with — `undefined` when the
+ *  user has turned the automatic edge flattening off, so every consumer can
+ *  pass the same value to `warpPoly` without repeating the check. */
+export function activeCurves(page: {
+  curves?: EdgeCurves;
+  curvesEnabled?: boolean;
+}): EdgeCurves | undefined {
+  if (page.curvesEnabled === false) return undefined;
+  return page.curves;
+}
+
 /** Multi-point document boundary, ordered around the document (normalized 0..1). */
 export interface ScanPage {
   id: string;
@@ -44,6 +70,12 @@ export interface ScanPage {
   /** Page-curl dewarp strength in [-1, 1]; 0/undefined = off. Positive flattens
    *  a page bulging toward the camera, negative the opposite. */
   dewarpStrength?: number;
+  /** Measured bow of each paper edge (see `EdgeCurves`). The warp stretches a
+   *  bowed edge out to the page border so no background shows along it. */
+  curves?: EdgeCurves;
+  /** Whether to apply `curves`. Defaults to on; the measurement is kept when
+   *  the user turns it off, so turning it back on needs no re-detection. */
+  curvesEnabled?: boolean;
   /** Downscaled image bytes kept so the page can be persisted to IndexedDB
    *  (the object URL in `src` does not survive a reload). Optional to keep the
    *  in-memory page shape light; set when a page is created/imported. */

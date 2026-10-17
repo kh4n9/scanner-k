@@ -5,7 +5,8 @@
 import type { CV, Mat } from "@techstark/opencv-js";
 import cvModule from "@techstark/opencv-js";
 import { clamp, loadImage } from "./image";
-import type { Point } from "./types";
+import { measureEdgeCurves } from "./image-pixels";
+import type { DetectResult } from "./types";
 
 type RuntimeCv = CV & { onRuntimeInitialized?: () => void };
 
@@ -53,18 +54,21 @@ function polyArea(pts: { x: number; y: number }[]): number {
   return Math.abs(a) / 2;
 }
 
-/** From a binary mask, take the largest contour and return its corner quad. */
-function cornersFromMask(
-  cv: CV,
-  mask: Mat,
-  W: number,
-  H: number,
-): { pts: { x: number; y: number }[]; area: number } | null {
+/** The largest contour of a binary mask, with both its raw outline (which the
+ *  curvature measurement needs) and the 4-corner quad derived from it. */
+type MaskShape = {
+  contour: { x: number; y: number }[];
+  corners: { x: number; y: number }[];
+  area: number;
+};
+
+/** From a binary mask, take the largest contour and return its outline + quad. */
+function cornersFromMask(cv: CV, mask: Mat, W: number, H: number): MaskShape | null {
   const contours = new cv.MatVector();
   const hierarchy = new cv.Mat();
   cv.findContours(mask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-  let best: { pts: { x: number; y: number }[]; area: number } | null = null;
+  let best: MaskShape | null = null;
   for (let i = 0; i < contours.size(); i++) {
     const cnt = contours.get(i);
     const area = cv.contourArea(cnt);
@@ -78,7 +82,7 @@ function cornersFromMask(
       for (let r = 0; r < n; r++) pts.push({ x: cnt.data32S[r * 2], y: cnt.data32S[r * 2 + 1] });
       const corners = cornersFromPoints(pts);
       if (polyArea(corners) > 0.001 * W * H && (!best || area > best.area)) {
-        best = { pts: corners, area };
+        best = { contour: pts, corners, area };
       }
     }
     cnt.delete();
@@ -88,8 +92,9 @@ function cornersFromMask(
   return best;
 }
 
-/** Detect the document quad using OpenCV. Returns 4 normalized (0..1) corners. */
-export async function detectWithOpenCv(src: string): Promise<Point[]> {
+/** Detect the document using OpenCV: the 4 normalized (0..1) corners plus how
+ *  far each edge bows away from the straight chord between them. */
+export async function detectWithOpenCv(src: string): Promise<DetectResult> {
   const cv = await getOpenCv();
   const image = await loadImage(src);
   const W = image.naturalWidth;
@@ -102,7 +107,7 @@ export async function detectWithOpenCv(src: string): Promise<Point[]> {
   const srcMat = cv.imread(canvas);
   const gray = new cv.Mat();
   const blurred = new cv.Mat();
-  let best: { pts: { x: number; y: number }[]; area: number } | null = null;
+  let best: MaskShape | null = null;
   try {
     cv.cvtColor(srcMat, gray, cv.COLOR_RGBA2GRAY);
     cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
@@ -139,10 +144,15 @@ export async function detectWithOpenCv(src: string): Promise<Point[]> {
   }
 
   if (best) {
-    return cornersFromPoints(best.pts).map((p) => ({
-      x: clamp(p.x / W, 0, 1),
-      y: clamp(p.y / H, 0, 1),
-    }));
+    return {
+      boundary: best.corners.map((p) => ({
+        x: clamp(p.x / W, 0, 1),
+        y: clamp(p.y / H, 0, 1),
+      })),
+      // Measured on the raw contour, in full source pixels — the same space the
+      // corners are in, so the sagitta is a pure ratio of the edge length.
+      curves: measureEdgeCurves(best.contour, best.corners),
+    };
   }
   throw new Error("Không tìm thấy vùng phiếu (OpenCV).");
 }

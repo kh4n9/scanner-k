@@ -13,7 +13,15 @@ import {
 } from "@/lib/image";
 import { detectWithOpenCv } from "@/lib/opencv";
 import { PAPER_OPTIONS, paperFor } from "@/lib/paper";
-import type { Adjust, FilterMode, PaperShape, Point, Rotate, ScanPage } from "@/lib/types";
+import type {
+  Adjust,
+  EdgeCurves,
+  FilterMode,
+  PaperShape,
+  Point,
+  Rotate,
+  ScanPage,
+} from "@/lib/types";
 import { NEUTRAL_ADJUST } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { PagePreview } from "./PagePreview";
@@ -64,6 +72,10 @@ export function PageEditor({
   const [sharpen, setSharpen] = React.useState(page.sharpen ?? false);
   const [rotation, setRotation] = React.useState<Rotate>(page.rotation ?? 0);
   const [dewarpStrength, setDewarpStrength] = React.useState(page.dewarpStrength ?? 0);
+  // Measured when the boundary was detected; the toggle below only decides
+  // whether the warp uses it, so turning it back on needs no re-detection.
+  const [curves, setCurves] = React.useState<EdgeCurves>(page.curves ?? [0, 0, 0, 0]);
+  const [curvesEnabled, setCurvesEnabled] = React.useState(page.curvesEnabled ?? true);
   const [dragging, setDragging] = React.useState<number | null>(null);
   const [selected, setSelected] = React.useState<number | null>(null);
   const [detectBusy, setDetectBusy] = React.useState(false);
@@ -215,7 +227,8 @@ export function PageEditor({
     setDetectBusy(true);
     try {
       const next = await detectDocBoundary(page.src);
-      setBoundary(next);
+      setBoundary(next.boundary);
+      setCurves(next.curves);
     } catch {
       // keep current
     } finally {
@@ -228,7 +241,8 @@ export function PageEditor({
     setCvError(null);
     try {
       const next = await detectWithOpenCv(page.src);
-      if (next.length === 4) setBoundary(next);
+      setBoundary(next.boundary);
+      setCurves(next.curves);
     } catch (e) {
       setCvError(e instanceof Error ? e.message : "Không dò được (OpenCV).");
     } finally {
@@ -280,9 +294,27 @@ export function PageEditor({
       sharpen,
       rotation,
       dewarpStrength,
+      curves,
+      curvesEnabled,
     }),
-    [page, boundary, paper, filter, adjust, shadow, sharpen, rotation, dewarpStrength],
+    [
+      page,
+      boundary,
+      paper,
+      filter,
+      adjust,
+      shadow,
+      sharpen,
+      rotation,
+      dewarpStrength,
+      curves,
+      curvesEnabled,
+    ],
   );
+
+  // Nothing measured yet (a page added before this feature, or a straight-edged
+  // document): the toggle has nothing to switch, so it shows as unavailable.
+  const hasCurves = curves.some((c) => c !== 0);
 
   const setCustomPaper = (w: number, h: number) => {
     setPaper({ kind: "custom", widthMm: Math.round(w), heightMm: Math.round(h) });
@@ -307,7 +339,20 @@ export function PageEditor({
         <Button
           size="lg"
           className="w-full"
-          onClick={() => onApply({ boundary, paper, filter, adjust, shadow, sharpen, rotation, dewarpStrength })}
+          onClick={() =>
+            onApply({
+              boundary,
+              paper,
+              filter,
+              adjust,
+              shadow,
+              sharpen,
+              rotation,
+              dewarpStrength,
+              curves,
+              curvesEnabled,
+            })
+          }
         >
           Áp dụng
         </Button>
@@ -583,7 +628,30 @@ export function PageEditor({
               </span>
               Tăng độ sắc nét
             </button>
+            <button
+              type="button"
+              onClick={() => setCurvesEnabled((v) => !v)}
+              disabled={!hasCurves}
+              title={hasCurves ? undefined : "Chưa đo được mép cong — bấm “Tự dò lại”."}
+              className={cn(
+                "flex items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs font-medium transition-colors",
+                hasCurves && curvesEnabled
+                  ? "bg-primary text-primary-foreground border-transparent"
+                  : "hover:bg-accent/60",
+                !hasCurves && "cursor-not-allowed opacity-50 hover:bg-transparent",
+              )}
+            >
+              <span className="flex h-3.5 w-3.5 items-center justify-center rounded border border-current text-[9px]">
+                {hasCurves && curvesEnabled ? "✓" : ""}
+              </span>
+              Uốn thẳng mép cong
+            </button>
           </div>
+          {boundary.length > 4 && (
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              Đang uốn theo các điểm bạn thêm trên viền.
+            </p>
+          )}
           <div className="mt-3">
             <button
               type="button"

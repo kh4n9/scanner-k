@@ -10,6 +10,10 @@ type WarpRequest = {
   srcW: number;
   srcH: number;
   h: number[];
+  /** Four edge polylines, packed as `[count, x,y, ...]` per edge in
+   *  [top, right, bottom, left] order. Present ⇒ the mesh warp runs instead of
+   *  the plain homography sample. */
+  edges?: Float32Array;
   outW: number;
   outH: number;
   logicalW: number;
@@ -66,7 +70,10 @@ export function warpInWorker(req: WarpRequest): Promise<Uint8ClampedArray<ArrayB
   return new Promise<Uint8ClampedArray<ArrayBuffer>>((resolve, reject) => {
     pending.set(id, { resolve, reject });
     try {
-      w.postMessage({ ...req, id } satisfies WarpRequest & { id: number }, [req.src]);
+      const transfer: Transferable[] = [req.src];
+      // The edge buffer is ours to give away: it was built for this one render.
+      if (req.edges) transfer.push(req.edges.buffer);
+      w.postMessage({ ...req, id } satisfies WarpRequest & { id: number }, transfer);
     } catch (e) {
       pending.delete(id);
       reject(e);

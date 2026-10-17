@@ -9,6 +9,7 @@ import type { ExportFormat, ExportResult } from "@/lib/export";
 import { warpPoly } from "@/lib/image";
 import { ocrImage } from "@/lib/ocr";
 import { cn, formatBytes } from "@/lib/utils";
+import { activeCurves } from "@/lib/types";
 import type { ScanPage } from "@/lib/types";
 
 const FORMATS: { value: ExportFormat; label: string }[] = [
@@ -93,6 +94,7 @@ export function ExportSheet({
             sharpen: page.sharpen,
             rotation: page.rotation ?? 0,
             dewarpStrength: page.dewarpStrength ?? 0,
+            curves: activeCurves(page),
             maxDim: 1600,
           });
           const url = canvas.toDataURL("image/png");

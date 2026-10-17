@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ArrowLeft, Eye, FilePlus2, Loader2, ScanHeart } from "lucide-react";
+import { ArrowLeft, Eye, FilePlus2, Loader2, ScanHeart, ScanSearch } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet } from "@/components/ui/sheet";
 import { AddSourcePad } from "./AddSourcePad";
@@ -22,7 +22,7 @@ import {
   saveDocument,
 } from "@/lib/db";
 import type { DocMeta, StoredDoc, StoredPage } from "@/lib/db";
-import type { Adjust, PaperShape, Point, ScanPage } from "@/lib/types";
+import type { Adjust, EdgeCurves, PaperShape, Point, ScanPage } from "@/lib/types";
 
 /** Turn an in-memory page into a persisted record, reusing the cached image
  *  bytes when possible and otherwise fetching from the object URL. */
@@ -49,6 +49,8 @@ async function toStored(p: ScanPage): Promise<StoredPage> {
     sharpen: p.sharpen,
     rotation: p.rotation ?? 0,
     dewarpStrength: p.dewarpStrength ?? 0,
+    curves: p.curves,
+    curvesEnabled: p.curvesEnabled,
     image,
     mime,
   };
@@ -74,6 +76,8 @@ function restorePages(stored: StoredPage[]): ScanPage[] {
     sharpen: p.sharpen,
     rotation: p.rotation,
     dewarpStrength: p.dewarpStrength,
+    curves: p.curves,
+    curvesEnabled: p.curvesEnabled,
     image: p.image,
     mime: p.mime,
   }));
@@ -87,6 +91,7 @@ export function Scanner() {
   const [showExport, setShowExport] = React.useState(false);
   const [showPreview, setShowPreview] = React.useState(false);
   const [adding, setAdding] = React.useState(false);
+  const [redetecting, setRedetecting] = React.useState(false);
 
   // Persistence / multi-document state.
   const [docId, setDocId] = React.useState<string | null>(null);
@@ -121,8 +126,11 @@ export function Scanner() {
       // Non-fatal: the page still works in memory this session.
     }
     let boundary: Point[];
+    let curves: EdgeCurves = [0, 0, 0, 0];
     try {
-      boundary = await detectDocBoundary(src);
+      const detected = await detectDocBoundary(src);
+      boundary = detected.boundary;
+      curves = detected.curves;
     } catch {
       boundary = [
         { x: 0, y: 0 },
@@ -155,6 +163,8 @@ export function Scanner() {
         shadow,
         sharpen: true,
         rotation: 0,
+        curves,
+        curvesEnabled: true,
         image,
         mime,
       },
@@ -178,6 +188,26 @@ export function Scanner() {
   const updatePage = React.useCallback((id: string, patch: Partial<ScanPage>) => {
     setPages((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
   }, []);
+
+  /** Re-run detection on every page. This is what lets pages added before the
+   *  edge-curvature measurement existed pick up their measured bows without
+   *  being removed and re-added. Runs one page at a time: detection loads and
+   *  thresholds each image, and a document can be long. */
+  const redetectAll = React.useCallback(async () => {
+    setRedetecting(true);
+    try {
+      for (const page of pagesRef.current) {
+        try {
+          const detected = await detectDocBoundary(page.src);
+          updatePage(page.id, { boundary: detected.boundary, curves: detected.curves });
+        } catch {
+          // Leave this page's current boundary alone.
+        }
+      }
+    } finally {
+      setRedetecting(false);
+    }
+  }, [updatePage]);
 
   /** Set one paper size across the whole document. */
   const applyPaperToAll = React.useCallback((paper: PaperShape) => {
@@ -375,6 +405,24 @@ export function Scanner() {
       {!restoring && pages.length > 0 && (
         <div className="mb-5 rounded-xl border border-border bg-card p-2">
           <PaperBulkControl pages={pages} onApply={applyPaperToAll} />
+          <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={redetectAll}
+              disabled={redetecting}
+            >
+              {redetecting ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <ScanSearch className="h-4 w-4" />
+              )}
+              Dò lại viền tất cả trang
+            </Button>
+            <span className="text-[11px] text-muted-foreground">
+              Đo lại mép giấy cong cho các trang đã thêm.
+            </span>
+          </div>
         </div>
       )}
 

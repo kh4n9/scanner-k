@@ -1,6 +1,22 @@
-import { applyFilterRgba, autoAdjust, isNeutralFilter } from "./image-pixels";
+import {
+  applyFilterRgba,
+  autoAdjust,
+  buildEdgeDeviations,
+  isNeutralFilter,
+  measureEdgeCurves,
+} from "./image-pixels";
+import type { EdgeDeviations } from "./image-pixels";
 import { withRenderSlot } from "./render-queue";
-import type { Adjust, FilterMode, PaperShape, Point, Rotate } from "./types";
+import { NO_CURVES } from "./types";
+import type {
+  Adjust,
+  DetectResult,
+  EdgeCurves,
+  FilterMode,
+  PaperShape,
+  Point,
+  Rotate,
+} from "./types";
 import { warpInWorker } from "./warpWorker";
 
 // Decoded sources, keyed by `src`. Without this every render decodes the JPEG
@@ -351,12 +367,16 @@ async function getDocComponent(src: string, maxSide: number) {
   return { pixels: best.pixels, w, h };
 }
 
-export async function detectDocBoundary(src: string): Promise<Point[]> {
+export async function detectDocBoundary(src: string): Promise<DetectResult> {
   const { pixels, w, h } = await getDocComponent(src, 360);
-  if (!pixels || pixels.length < 4) return FULL_BOUNDARY.slice();
+  if (!pixels || pixels.length < 4) {
+    return { boundary: FULL_BOUNDARY.slice(), curves: [0, 0, 0, 0] };
+  }
 
   const hull = convexHull(pixels);
-  if (hull.length < 3) return FULL_BOUNDARY.slice();
+  if (hull.length < 3) {
+    return { boundary: FULL_BOUNDARY.slice(), curves: [0, 0, 0, 0] };
+  }
 
   // Return the 4 clean corners (tl/tr/br/bl) — automatic, no scattered points.
   const extremes = {
@@ -393,7 +413,19 @@ export async function detectDocBoundary(src: string): Promise<Point[]> {
     x: clamp(p.x / w, 0, 1),
     y: clamp(p.y / h, 0, 1),
   });
-  return [norm(extremes.tl), norm(extremes.tr), norm(extremes.br), norm(extremes.bl)];
+  // Measured in the component's own (downscaled) pixel space, before the
+  // corners are normalized: the sagitta is a ratio of the edge length, so the
+  // scale cancels out either way, and the pixel list lives in this space.
+  const curves = measureEdgeCurves(pixels, [
+    extremes.tl,
+    extremes.tr,
+    extremes.br,
+    extremes.bl,
+  ]);
+  return {
+    boundary: [norm(extremes.tl), norm(extremes.tr), norm(extremes.br), norm(extremes.bl)],
+    curves,
+  };
 }
 
 function paperRatio(paper: PaperShape, boxW: number, boxH: number): number {
@@ -513,6 +545,232 @@ function quadCorners(points: Point[]): Point[] | null {
   return [points[iTL], points[iTR], points[iBR], points[iBL]];
 }
 
+// A bow below this fraction of its edge's length is treated as straight: the
+// homography already maps the chord onto the border, and correcting less than
+// this only adds sampling noise. Deliberately below the detector's acceptance
+// floor (`CURVE_MIN` in image-pixels.ts), so a bow the detector accepted is
+// never dropped back to the straight path here.
+const STRAIGHT_EPS = 0.004;
+// Points per synthesized Bezier edge. The curve is smooth and the mesh only
+// needs its shape, not its resolution.
+const EDGE_SAMPLES = 17;
+
+// One edge as a quadratic Bezier whose midpoint sits exactly `s * len` inside
+// the chord. The Bezier midpoint is 0.25*P0 + 0.5*C + 0.25*P2, hence the factor
+// 2 on the control point. Positive `s` bows toward the page centre, matching
+// `measureEdgeCurves`.
+function curvedEdge(a: Point, b: Point, s: number, cx: number, cy: number): Point[] {
+  if (Math.abs(s) < STRAIGHT_EPS) return [a, b];
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-6) return [a, b];
+  let nx = -dy / len;
+  let ny = dx / len;
+  const mx = (a.x + b.x) / 2;
+  const my = (a.y + b.y) / 2;
+  if ((cx - mx) * nx + (cy - my) * ny < 0) {
+    nx = -nx;
+    ny = -ny;
+  }
+  const px = mx + 2 * s * len * nx;
+  const py = my + 2 * s * len * ny;
+  const pts: Point[] = [];
+  for (let i = 0; i < EDGE_SAMPLES; i++) {
+    const t = i / (EDGE_SAMPLES - 1);
+    const mt = 1 - t;
+    pts.push({
+      x: mt * mt * a.x + 2 * mt * t * px + t * t * b.x,
+      y: mt * mt * a.y + 2 * mt * t * py + t * t * b.y,
+    });
+  }
+  return pts;
+}
+
+// Drop the points that already sit on the chord. An extra point left on a
+// straight edge — the editor's "+" button placed innocently, or a detector's
+// collinear vertex — must not by itself switch the render from the exact
+// homography to the mesh.
+function simplifyEdge(seg: Point[], eps: number): Point[] {
+  if (seg.length <= 2) return seg;
+  const a = seg[0];
+  const b = seg[seg.length - 1];
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-6) return [a, b];
+  const keep = [a];
+  for (let i = 1; i < seg.length - 1; i++) {
+    const off = Math.abs((seg[i].x - a.x) * dy - (seg[i].y - a.y) * dx) / len;
+    if (off > eps * len) keep.push(seg[i]);
+  }
+  keep.push(b);
+  return keep;
+}
+
+/**
+ * Split an ordered boundary polygon (more than 4 points) into its four edges,
+ * each running corner to corner and keeping the intermediate points the user
+ * placed. Returns them in [top, right, bottom, left] order with top/bottom
+ * running left→right and left/right running top→bottom, which is the
+ * orientation the mesh's lookup tables assume.
+ *
+ * The polygon may be wound either way, so the direction is derived from which
+ * neighbour of TL comes first — no per-orientation table to get wrong.
+ */
+function polygonEdges(pts: Point[]): Point[][] | null {
+  const n = pts.length;
+  if (n < 5) return null;
+  let iTL = 0;
+  let iTR = 0;
+  let iBR = 0;
+  let iBL = 0;
+  let minS = Infinity;
+  let maxS = -Infinity;
+  let minD = Infinity;
+  let maxD = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const s = pts[i].x + pts[i].y;
+    const d = pts[i].x - pts[i].y;
+    if (s < minS) {
+      minS = s;
+      iTL = i;
+    }
+    if (s > maxS) {
+      maxS = s;
+      iBR = i;
+    }
+    if (d < minD) {
+      minD = d;
+      iBL = i;
+    }
+    if (d > maxD) {
+      maxD = d;
+      iTR = i;
+    }
+  }
+  if (new Set([iTL, iTR, iBR, iBL]).size < 4) return null;
+
+  const stepsTo = (from: number, to: number) => {
+    let k = from;
+    let steps = 0;
+    while (k !== to && steps <= n) {
+      k = (k + 1) % n;
+      steps++;
+    }
+    return steps;
+  };
+  const dir = stepsTo(iTL, iTR) < stepsTo(iTL, iBL) ? 1 : -1;
+  const walk = (from: number, to: number): Point[] => {
+    const out: Point[] = [pts[from]];
+    let k = from;
+    let steps = 0;
+    while (k !== to && steps < n) {
+      k = (k + dir + n) % n;
+      out.push(pts[k]);
+      steps++;
+    }
+    return out;
+  };
+
+  if (dir === 1) {
+    return [
+      walk(iTL, iTR),
+      walk(iTR, iBR),
+      walk(iBR, iBL).reverse(),
+      walk(iBL, iTL).reverse(),
+    ];
+  }
+  return [
+    walk(iTR, iTL).reverse(),
+    walk(iBR, iTR).reverse(),
+    walk(iBL, iBR),
+    walk(iTL, iBL),
+  ];
+}
+
+/**
+ * The four edge polylines the mesh warp consumes, packed as
+ * `[count, x,y, ...]` per edge in [top, right, bottom, left] order and in
+ * source-pixel space. Returns null when every edge is straight — the signal to
+ * keep the exact homography path, unchanged.
+ *
+ * Two sources feed it: the measured per-edge bows (`curves`), and — when the
+ * user has added boundary points — the polygon itself, which then wins because
+ * it is a direct statement of where the paper's edge is.
+ */
+function edgePolylines(
+  corners: Point[],
+  curves: EdgeCurves,
+  polygon?: Point[],
+): Float32Array | null {
+  const [tl, tr, br, bl] = corners;
+  const cx = (tl.x + tr.x + br.x + bl.x) / 4;
+  const cy = (tl.y + tr.y + br.y + bl.y) / 4;
+
+  let segs: Point[][];
+  if (polygon && polygon.length > 4) {
+    const split = polygonEdges(polygon);
+    if (!split) return null;
+    segs = split.map((seg) => simplifyEdge(seg, STRAIGHT_EPS));
+  } else {
+    segs = [
+      curvedEdge(tl, tr, curves[0], cx, cy),
+      curvedEdge(tr, br, curves[1], cx, cy),
+      curvedEdge(bl, br, curves[2], cx, cy),
+      curvedEdge(tl, bl, curves[3], cx, cy),
+    ];
+  }
+  if (segs.every((seg) => seg.length <= 2)) return null;
+
+  let total = 4;
+  for (const seg of segs) total += seg.length * 2;
+  const out = new Float32Array(total);
+  let i = 0;
+  for (const seg of segs) {
+    out[i++] = seg.length;
+    for (const p of seg) {
+      out[i++] = p.x;
+      out[i++] = p.y;
+    }
+  }
+  return out;
+}
+
+// Edge midpoints in the normalized frame, in [top, right, bottom, left] order.
+const EDGE_MIDPOINTS: Point[] = [
+  { x: 0.5, y: 0 },
+  { x: 1, y: 0.5 },
+  { x: 0.5, y: 1 },
+  { x: 0, y: 0.5 },
+];
+
+/**
+ * Carry the per-edge measurements through a document rotation. Each source
+ * edge's midpoint is pushed through the same `mapNorm` the boundary used and
+ * matched to the destination midpoint it lands on — exact for the quarter
+ * turns this is used for, and with no hand-derived permutation to get wrong.
+ * The sign needs no flip: the page interior maps to the page interior.
+ */
+function rotateEdgeCurves(curves: EdgeCurves, mapNorm: (p: Point) => Point): EdgeCurves {
+  const out: EdgeCurves = [0, 0, 0, 0];
+  for (let e = 0; e < 4; e++) {
+    if (!curves[e]) continue;
+    const m = mapNorm(EDGE_MIDPOINTS[e]);
+    let best = 0;
+    let bestD = Infinity;
+    for (let k = 0; k < 4; k++) {
+      const d = Math.hypot(m.x - EDGE_MIDPOINTS[k].x, m.y - EDGE_MIDPOINTS[k].y);
+      if (d < bestD) {
+        bestD = d;
+        best = k;
+      }
+    }
+    out[best] = curves[e];
+  }
+  return out;
+}
+
 // Render the source into the target rectangle using a true perspective
 // (homography) transform by sampling per pixel: for every output pixel we invert
 // the homography to find its exact source coordinate, then bilinear-interpolate.
@@ -562,6 +820,99 @@ function drawPerspective(
       // Bilinear sample in source space, optionally curved (page-curl dewarp).
       const sx = clamp(applyCurve(p.x, sw, dewarpStrength), 0, sw - 1);
       const sy = clamp(p.y, 0, sh - 1);
+      const x0 = Math.floor(sx);
+      const y0 = Math.floor(sy);
+      const x1 = Math.min(x0 + 1, sw - 1);
+      const y1 = Math.min(y0 + 1, sh - 1);
+      const fx = sx - x0;
+      const fy2 = sy - y0;
+      const i00 = (y0 * sw + x0) * 4;
+      const i10 = (y0 * sw + x1) * 4;
+      const i01 = (y1 * sw + x0) * 4;
+      const i11 = (y1 * sw + x1) * 4;
+      const w00 = (1 - fx) * (1 - fy2);
+      const w10 = fx * (1 - fy2);
+      const w01 = (1 - fx) * fy2;
+      const w11 = fx * fy2;
+      const oi = (y * outW + x) * 4;
+      o[oi] = s[i00] * w00 + s[i10] * w10 + s[i01] * w01 + s[i11] * w11;
+      o[oi + 1] = s[i00 + 1] * w00 + s[i10 + 1] * w10 + s[i01 + 1] * w01 + s[i11 + 1] * w11;
+      o[oi + 2] = s[i00 + 2] * w00 + s[i10 + 2] * w10 + s[i01 + 2] * w01 + s[i11 + 2] * w11;
+      o[oi + 3] = 255;
+    }
+  }
+
+  ctx.putImageData(out, 0, 0);
+}
+
+// Main-thread twin of `warpMeshRgba`: the same perspective sample with the four
+// edge deviations blended in. Kept as a copy of the loop rather than a shared
+// callback because the sampler runs once per output pixel — the existing pair
+// (`drawPerspective` / `warpRgba`) is duplicated for the same reason.
+function drawMeshPerspective(
+  ctx: CanvasRenderingContext2D,
+  srcCanvas: HTMLCanvasElement,
+  h: number[],
+  devs: EdgeDeviations,
+  outW: number,
+  outH: number,
+  logicalW: number,
+  logicalH: number,
+  dewarpStrength = 0,
+) {
+  const sw = srcCanvas.width;
+  const sh = srcCanvas.height;
+  const s = srcCanvas.getContext("2d")!.getImageData(0, 0, sw, sh).data;
+
+  const out = ctx.createImageData(outW, outH);
+  const o = out.data;
+  const { top, bottom, left, right } = devs;
+  const xStep = logicalW / outW;
+  const yStep = logicalH / outH;
+
+  const uArr = new Float64Array(outW);
+  const lxArr = new Float64Array(outW);
+  for (let x = 0; x < outW; x++) {
+    uArr[x] = (x + 0.5) / outW;
+    lxArr[x] = (x + 0.5) * xStep;
+  }
+
+  for (let y = 0; y < outH; y++) {
+    const v = (y + 0.5) / outH;
+    const ly = (y + 0.5) * yStep;
+    const ldx = left[2 * y];
+    const ldy = left[2 * y + 1];
+    const rdx = right[2 * y];
+    const rdy = right[2 * y + 1];
+    const wTop = 1 - v;
+    const wBottom = v;
+    for (let x = 0; x < outW; x++) {
+      const lx = lxArr[x];
+      const u = uArr[x];
+      const d = h[6] * lx + h[7] * ly + h[8];
+      const wLeft = 1 - u;
+      const sx = clamp(
+        applyCurve(
+          (h[0] * lx + h[1] * ly + h[2]) / d +
+            wTop * top[2 * x] +
+            wBottom * bottom[2 * x] +
+            wLeft * ldx +
+            u * rdx,
+          sw,
+          dewarpStrength,
+        ),
+        0,
+        sw - 1,
+      );
+      const sy = clamp(
+        (h[3] * lx + h[4] * ly + h[5]) / d +
+          wTop * top[2 * x + 1] +
+          wBottom * bottom[2 * x + 1] +
+          wLeft * ldy +
+          u * rdy,
+        0,
+        sh - 1,
+      );
       const x0 = Math.floor(sx);
       const y0 = Math.floor(sy);
       const x1 = Math.min(x0 + 1, sw - 1);
@@ -731,6 +1082,7 @@ async function tryWorkerWarp(
   adjust?: Adjust,
   shadow?: boolean,
   sharpen?: boolean,
+  edges?: Float32Array,
 ): Promise<HTMLCanvasElement | null> {
   try {
     const W = sourceCanvas.width;
@@ -742,6 +1094,7 @@ async function tryWorkerWarp(
       srcW: W,
       srcH: H,
       h,
+      edges,
       outW: pxW,
       outH: pxH,
       logicalW: tw,
@@ -781,6 +1134,9 @@ type WarpPolyArgs = {
   rotation?: Rotate;
   /** Page-curl dewarp strength in [-1, 1]. */
   dewarpStrength?: number;
+  /** Measured bow of each paper edge (see `EdgeCurves`). The warp stretches a
+   *  bowed edge out to the page border so no background shows along it. */
+  curves?: EdgeCurves;
 };
 
 export async function warpPoly(
@@ -805,6 +1161,7 @@ async function renderPoly({
   renderScale,
   rotation = 0,
   dewarpStrength = 0,
+  curves: curvesIn = NO_CURVES,
 }: WarpPolyArgs): Promise<{ canvas: HTMLCanvasElement; width: number; height: number }> {
   const image = await loadImage(src);
   const iw = image.naturalWidth;
@@ -815,6 +1172,9 @@ async function renderPoly({
   let W: number;
   let H: number;
   let pts = boundary && boundary.length >= 3 ? boundary : FULL_BOUNDARY;
+  // The per-edge bows are stored in the same (unrotated) frame as the boundary,
+  // so they ride through the same mapping.
+  let curves = curvesIn;
 
   if (rotation % 360 !== 0) {
     const r = renderRotatedSource(image, rotation as Rotate);
@@ -823,6 +1183,7 @@ async function renderPoly({
     H = r.height;
     // Map the boundary from the original frame into the rotated frame.
     pts = pts.map((p) => r.mapNorm(p));
+    curves = rotateEdgeCurves(curvesIn, r.mapNorm);
   } else {
     W = iw;
     H = ih;
@@ -878,6 +1239,11 @@ async function renderPoly({
   // from the full-resolution source, so it stays crisp. Each cell corner maps
   // through the exact homography, which makes the mesh seamless.
   const corners = quadCorners(pts);
+  // Null when every edge is straight — then the homography below is already
+  // exact and this render is byte-for-byte what it was before the mesh existed.
+  const edges = corners
+    ? edgePolylines(corners, curves, pts.length > 4 ? pts : undefined)
+    : null;
   let canvas: HTMLCanvasElement | null = null;
   let filterApplied = false;
   if (corners) {
@@ -891,18 +1257,35 @@ async function renderPoly({
       corners,
     );
     if (h) {
+      // The homography stays the baseline and the edges only add their bow on
+      // top of it, so an angled photo keeps its perspective correction.
+      const devs = edges ? buildEdgeDeviations(h, edges, pxW, pxH, tw, th) : null;
       // When dewarp is active the curve lives only in the main-thread sampler,
       // so bypass the worker and render here (also applies the filter below).
       if (dewarpStrength !== 0) {
-        const inv = (x: number, y: number) => {
-          const d = h[6] * x + h[7] * y + h[8];
-          return {
-            x: (h[0] * x + h[1] * y + h[2]) / d,
-            y: (h[3] * x + h[4] * y + h[5]) / d,
-          };
-        };
         const { c } = make(pxW, pxH);
-        drawPerspective(c.getContext("2d")!, sourceCanvas, inv, pxW, pxH, tw, th, dewarpStrength);
+        if (devs) {
+          drawMeshPerspective(
+            c.getContext("2d")!,
+            sourceCanvas,
+            h,
+            devs,
+            pxW,
+            pxH,
+            tw,
+            th,
+            dewarpStrength,
+          );
+        } else {
+          const inv = (x: number, y: number) => {
+            const d = h[6] * x + h[7] * y + h[8];
+            return {
+              x: (h[0] * x + h[1] * y + h[2]) / d,
+              y: (h[3] * x + h[4] * y + h[5]) / d,
+            };
+          };
+          drawPerspective(c.getContext("2d")!, sourceCanvas, inv, pxW, pxH, tw, th, dewarpStrength);
+        }
         canvas = c;
       } else {
         // Try the off-main-thread warp first; fall back to the main-thread path
@@ -918,20 +1301,25 @@ async function renderPoly({
           adjust,
           shadow,
           sharpen,
+          edges ?? undefined,
         );
         if (workerCanvas) {
           canvas = workerCanvas;
           filterApplied = true;
         } else {
-          const inv = (x: number, y: number) => {
-            const d = h[6] * x + h[7] * y + h[8];
-            return {
-              x: (h[0] * x + h[1] * y + h[2]) / d,
-              y: (h[3] * x + h[4] * y + h[5]) / d,
-            };
-          };
           const { c } = make(pxW, pxH);
-          drawPerspective(c.getContext("2d")!, sourceCanvas, inv, pxW, pxH, tw, th);
+          if (devs) {
+            drawMeshPerspective(c.getContext("2d")!, sourceCanvas, h, devs, pxW, pxH, tw, th);
+          } else {
+            const inv = (x: number, y: number) => {
+              const d = h[6] * x + h[7] * y + h[8];
+              return {
+                x: (h[0] * x + h[1] * y + h[2]) / d,
+                y: (h[3] * x + h[4] * y + h[5]) / d,
+              };
+            };
+            drawPerspective(c.getContext("2d")!, sourceCanvas, inv, pxW, pxH, tw, th);
+          }
           canvas = c;
         }
       }
