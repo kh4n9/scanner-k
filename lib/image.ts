@@ -2,6 +2,7 @@ import {
   applyFilterRgba,
   autoAdjust,
   buildEdgeDeviations,
+  edgeWeight,
   isNeutralFilter,
   measureEdgeCurves,
 } from "./image-pixels";
@@ -891,20 +892,21 @@ function drawMeshPerspective(
     const ldy = left[2 * y + 1];
     const rdx = right[2 * y];
     const rdy = right[2 * y + 1];
-    const wTop = 1 - v;
-    const wBottom = v;
+    const wTop = edgeWeight(1 - v);
+    const wBottom = edgeWeight(v);
     for (let x = 0; x < outW; x++) {
       const lx = lxArr[x];
       const u = uArr[x];
       const d = h[6] * lx + h[7] * ly + h[8];
-      const wLeft = 1 - u;
+      const wLeft = edgeWeight(1 - u);
+      const wRight = edgeWeight(u);
       const sx = clamp(
         applyCurve(
           (h[0] * lx + h[1] * ly + h[2]) / d +
             wTop * top[2 * x] +
             wBottom * bottom[2 * x] +
             wLeft * ldx +
-            u * rdx,
+            wRight * rdx,
           sw,
           dewarpStrength,
         ),
@@ -916,7 +918,7 @@ function drawMeshPerspective(
           wTop * top[2 * x + 1] +
           wBottom * bottom[2 * x + 1] +
           wLeft * ldy +
-          u * rdy,
+          wRight * rdy,
         0,
         sh - 1,
       );

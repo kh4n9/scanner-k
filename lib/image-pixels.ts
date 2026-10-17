@@ -198,10 +198,11 @@ export function autoAdjust(mean: number, p05: number, p95: number): Adjust {
 // positive only stretches the page by a fraction of a percent, while a missed
 // bow leaves the background showing.
 const CURVE_MIN = 0.005;
-// Largest bow we believe. Real paper curl stays far below it; anything bigger
-// means the "edge" the detector found is not the paper (a table edge, a shadow),
-// and warping by it would wreck the page.
-const CURVE_MAX = 0.25;
+// Largest bow we believe. Paper curl stays below it; anything bigger means the
+// "edge" the detector found is not the paper (a table edge, a shadow), and
+// stretching the page by it would wreck it. Deliberately modest: a wrong small
+// correction is invisible, a wrong large one is not.
+const CURVE_MAX = 0.12;
 
 /**
  * How far each paper edge bows away from the straight chord between its two
@@ -284,31 +285,22 @@ export function measureEdgeCurves(points: Point[], corners: Point[]): EdgeCurves
       smooth[c] = sum / n;
     }
 
-    // Take out only the TILT (the best-fit slope) over the middle 80%, pivoting
-    // about the middle of the edge. A chord that is a few pixels off the real
-    // edge reads as a tilted line, not as a bow, and must not be mistaken for
-    // one. The level is deliberately kept: `d` is measured from the chord, so
-    // its offset from zero is the bow itself, and subtracting the intercept
-    // would throw the bow away with it.
-    const fitLo = Math.floor(cols * 0.1);
-    const fitHi = Math.ceil(cols * 0.9);
-    let sx = 0;
-    let sy = 0;
-    let sxx = 0;
-    let sxy = 0;
-    let n = 0;
-    for (let c = fitLo; c < fitHi; c++) {
-      sx += c;
-      sy += smooth[c];
-      sxx += c * c;
-      sxy += c * smooth[c];
-      n++;
-    }
-    if (n < 4) continue;
-    const denom = n * sxx - sx * sx;
-    const slope = denom !== 0 ? (n * sxy - sx * sy) / denom : 0;
-    const center = (cols - 1) / 2;
-    const level = (c: number) => slope * (c - center);
+    // The sagitta is measured against the line through the profile's OWN two
+    // ends — the corner-to-corner chord. `d` alone would not do: it also
+    // carries any uniform erosion of the mask along the page edge (a shadowed
+    // or dark paper rim drops out of the threshold, pushing the whole profile
+    // inward) and any tilt of the detected chord. Both of those are offsets,
+    // not bows, and correcting them stretches the page for nothing. A few
+    // columns at each end, averaged, so one stray column cannot tilt the
+    // baseline.
+    const end = Math.max(2, Math.round(cols * 0.04));
+    let firstSum = 0;
+    let lastSum = 0;
+    for (let c = 0; c < end; c++) firstSum += smooth[c];
+    for (let c = cols - end; c < cols; c++) lastSum += smooth[c];
+    const y0 = firstSum / end;
+    const y1 = lastSum / end;
+    const level = (c: number) => y0 + ((y1 - y0) * c) / (cols - 1);
 
     // The sagitta is defined at the middle of the edge, so read it there, and
     // use the surrounding stations only to judge whether it is real.
@@ -850,11 +842,30 @@ export function buildEdgeDeviations(
 }
 
 /**
+ * How fast an edge's correction dies away from that edge, as the exponent on
+ * the distance-from-the-border weight: `(1 - v)^EDGE_FALLOFF`.
+ *
+ * Linear (1) would be the bilinear blend, and it is wrong here: it spreads the
+ * correction right across the page, so a 2% bow along the top shifts the middle
+ * of the page by 1% of its height and the content visibly stretches. A high
+ * exponent keeps the correction in the band along the edge — where the paper is
+ * actually curled — and leaves the rest of the page as the homography had it.
+ * The border itself is untouched by this: at v = 0 the weight is still exactly
+ * 1, so the edge still lands on the measured curve.
+ */
+const EDGE_FALLOFF = 4;
+
+/** Weight an edge's correction carries at normalized distance `t` from it
+ *  (0 = on the edge itself, 1 = the opposite edge). */
+export function edgeWeight(t: number): number {
+  const t2 = t * t;
+  return EDGE_FALLOFF === 4 ? t2 * t2 : Math.pow(t, EDGE_FALLOFF);
+}
+
+/**
  * Perspective sample with the four edge deviations blended in — the same loop
  * as `warpRgba`, plus the border correction that stretches a bowed paper edge
- * out to the page rectangle. Weights are the bilinear ones, which is what makes
- * the correction fade to zero over the interior and reach exactly the measured
- * curve at each border.
+ * out to the page rectangle.
  */
 export function warpMeshRgba(
   src: Uint8ClampedArray,
@@ -887,19 +898,20 @@ export function warpMeshRgba(
     const ldy = left[2 * y + 1];
     const rdx = right[2 * y];
     const rdy = right[2 * y + 1];
-    const wTop = 1 - v;
-    const wBottom = v;
+    const wTop = edgeWeight(1 - v);
+    const wBottom = edgeWeight(v);
     for (let x = 0; x < outW; x++) {
       const lx = lxArr[x];
       const u = uArr[x];
       const d = h[6] * lx + h[7] * ly + h[8];
-      const wLeft = 1 - u;
+      const wLeft = edgeWeight(1 - u);
+      const wRight = edgeWeight(u);
       const sx = clamp(
         (h[0] * lx + h[1] * ly + h[2]) / d +
           wTop * top[2 * x] +
           wBottom * bottom[2 * x] +
           wLeft * ldx +
-          u * rdx,
+          wRight * rdx,
         0,
         sw - 1,
       );
@@ -908,7 +920,7 @@ export function warpMeshRgba(
           wTop * top[2 * x + 1] +
           wBottom * bottom[2 * x + 1] +
           wLeft * ldy +
-          u * rdy,
+          wRight * rdy,
         0,
         sh - 1,
       );
