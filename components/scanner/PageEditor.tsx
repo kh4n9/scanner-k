@@ -22,7 +22,7 @@ import type {
   Rotate,
   ScanPage,
 } from "@/lib/types";
-import { NEUTRAL_ADJUST } from "@/lib/types";
+import { DEFAULT_SHARPEN, NEUTRAL_ADJUST } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { PagePreview } from "./PagePreview";
 
@@ -70,6 +70,9 @@ export function PageEditor({
   const [adjust, setAdjust] = React.useState<Adjust>(page.adjust ?? NEUTRAL_ADJUST);
   const [shadow, setShadow] = React.useState(page.shadow ?? false);
   const [sharpen, setSharpen] = React.useState(page.sharpen ?? false);
+  const [sharpenStrength, setSharpenStrength] = React.useState(
+    page.sharpenStrength ?? DEFAULT_SHARPEN,
+  );
   const [rotation, setRotation] = React.useState<Rotate>(page.rotation ?? 0);
   const [dewarpStrength, setDewarpStrength] = React.useState(page.dewarpStrength ?? 0);
   // Measured when the boundary was detected; the toggle below only decides
@@ -327,6 +330,7 @@ export function PageEditor({
       adjust,
       shadow,
       sharpen,
+      sharpenStrength,
       rotation,
       dewarpStrength,
       curves,
@@ -340,6 +344,7 @@ export function PageEditor({
       adjust,
       shadow,
       sharpen,
+      sharpenStrength,
       rotation,
       dewarpStrength,
       curves,
@@ -382,6 +387,7 @@ export function PageEditor({
               adjust,
               shadow,
               sharpen,
+              sharpenStrength,
               rotation,
               dewarpStrength,
               curves,
@@ -706,6 +712,29 @@ export function PageEditor({
                   ).toFixed(1)}% (đường nét đứt)`
                 : "Chưa đo được mép cong nào — nếu mép giấy bị cong, bấm “Tự dò lại”."}
             </p>
+          )}
+          {sharpen && (
+            <div className="mt-3">
+              <div className="mb-1 flex justify-between text-xs">
+                <span>Độ sắc nét</span>
+                <span className="tabular-nums text-muted-foreground">
+                  {Math.round(sharpenStrength * 100)}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0.5}
+                max={2.5}
+                step={0.05}
+                value={sharpenStrength}
+                onChange={(e) => setSharpenStrength(Number(e.target.value))}
+                className="w-full accent-primary"
+                aria-label="Độ sắc nét"
+              />
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Kéo lên cho nét chữ rõ hơn; quá cao sẽ nổi hạt nhiễu trên nền giấy.
+              </p>
+            </div>
           )}
           <div className="mt-3">
             <button

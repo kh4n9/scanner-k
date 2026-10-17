@@ -21,7 +21,8 @@ type WarpRequest = {
   filter: FilterMode;
   adjust?: Adjust;
   shadow: boolean;
-  sharpen: boolean;
+  /** Unsharp-mask amount; 0 leaves the pixels alone. */
+  sharpen: number;
 };
 
 type WarpResponse = { id: number; out: ArrayBuffer };

@@ -41,6 +41,21 @@ export interface DetectResult {
   curves: EdgeCurves;
 }
 
+/** Unsharp-mask amount used when a page has no explicit strength. 1 would be
+ *  the neutral value of the formula; the default sits above it because a scan
+ *  of text is almost always read at a smaller size than it was captured at. */
+export const DEFAULT_SHARPEN = 1.2;
+
+/** The sharpening amount to hand the warp pipeline: 0 when the page's sharpen
+ *  toggle is off, otherwise the page's strength (or the default). */
+export function activeSharpen(page: {
+  sharpen?: boolean;
+  sharpenStrength?: number;
+}): number {
+  if (!page.sharpen) return 0;
+  return page.sharpenStrength ?? DEFAULT_SHARPEN;
+}
+
 /** The curvature a page should actually be warped with — `undefined` when the
  *  user has turned the automatic edge flattening off, so every consumer can
  *  pass the same value to `warpPoly` without repeating the check. */
@@ -63,8 +78,10 @@ export interface ScanPage {
   adjust: Adjust;
   /** Flatten shadows and even out the white paper background. */
   shadow?: boolean;
-  /** Apply a light unsharp mask for extra crispness. */
+  /** Apply an unsharp mask for extra crispness. */
   sharpen?: boolean;
+  /** Unsharp-mask amount when `sharpen` is on; see `DEFAULT_SHARPEN`. */
+  sharpenStrength?: number;
   /** Rotate the whole page clockwise before the perspective warp. */
   rotation?: Rotate;
   /** Page-curl dewarp strength in [-1, 1]; 0/undefined = off. Positive flattens

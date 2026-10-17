@@ -3,7 +3,7 @@
 import * as React from "react";
 import { warpPoly } from "@/lib/image";
 import { paperLabel } from "@/lib/paper";
-import { activeCurves } from "@/lib/types";
+import { activeCurves, activeSharpen } from "@/lib/types";
 import type { ScanPage } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -64,6 +64,7 @@ export function PagePreview({
         a: page.adjust,
         s: page.shadow,
         sh: page.sharpen,
+        ss: page.sharpenStrength,
         r: page.rotation,
         d: page.dewarpStrength,
         c: page.curves,
@@ -76,6 +77,7 @@ export function PagePreview({
       page.adjust,
       page.shadow,
       page.sharpen,
+      page.sharpenStrength,
       page.rotation,
       page.dewarpStrength,
       page.curves,
@@ -112,7 +114,7 @@ export function PagePreview({
         filter: page.filter,
         adjust: page.adjust,
         shadow: page.shadow,
-        sharpen: page.sharpen,
+        sharpen: activeSharpen(page),
         rotation: page.rotation ?? 0,
         dewarpStrength: page.dewarpStrength ?? 0,
         curves: activeCurves(page),

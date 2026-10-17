@@ -15,6 +15,7 @@ export type StoredPage = {
   adjust: Adjust;
   shadow?: boolean;
   sharpen?: boolean;
+  sharpenStrength?: number;
   rotation: Rotate;
   dewarpStrength: number;
   /** Measured bow of each paper edge (see `EdgeCurves`); absent on records

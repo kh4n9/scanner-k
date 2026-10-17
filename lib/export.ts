@@ -2,7 +2,7 @@
 import { buildPdfFromPages } from "./pdf";
 import { canvasToBlob, warpPoly } from "./image";
 import { createZip } from "./zip";
-import { activeCurves } from "./types";
+import { activeCurves, activeSharpen } from "./types";
 import type { ScanPage } from "./types";
 
 export type ExportFormat = "pdf" | "png" | "jpeg";
@@ -50,7 +50,7 @@ export async function buildExport(
       filter: page.filter,
       adjust: page.adjust,
       shadow: page.shadow,
-      sharpen: page.sharpen,
+      sharpen: activeSharpen(page),
       rotation: page.rotation ?? 0,
       dewarpStrength: page.dewarpStrength ?? 0,
       curves: activeCurves(page),

@@ -1,5 +1,5 @@
 import { PDFDocument } from "pdf-lib";
-import { activeCurves } from "./types";
+import { activeCurves, activeSharpen } from "./types";
 import type { PdfOptions, ScanPage } from "./types";
 import { canvasToBlob, warpPoly } from "./image";
 
@@ -20,7 +20,7 @@ export async function buildPdfFromPages(
       filter: page.filter,
       adjust: page.adjust,
       shadow: page.shadow,
-      sharpen: page.sharpen,
+      sharpen: activeSharpen(page),
       rotation: page.rotation ?? 0,
       dewarpStrength: page.dewarpStrength ?? 0,
       curves: activeCurves(page),

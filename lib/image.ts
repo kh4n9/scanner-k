@@ -4,7 +4,9 @@ import {
   buildEdgeDeviations,
   edgeWeight,
   isNeutralFilter,
+  isUpscale,
   measureEdgeCurves,
+  writeSample,
 } from "./image-pixels";
 import type { EdgeDeviations } from "./image-pixels";
 import { withRenderSlot } from "./render-queue";
@@ -91,7 +93,7 @@ export function applyFilter(
   canvas: HTMLCanvasElement,
   filter: FilterMode,
   adjust?: Adjust,
-  opts?: { shadow?: boolean; sharpen?: boolean },
+  opts?: { shadow?: boolean; sharpen?: number },
 ) {
   // Skip the buffer round-trip entirely when the pipeline would be a no-op —
   // the common case while the user drags a slider.
@@ -806,6 +808,7 @@ function drawPerspective(
   logicalW: number,
   logicalH: number,
   dewarpStrength = 0,
+  bicubic = false,
 ) {
   const sw = srcCanvas.width;
   const sh = srcCanvas.height;
@@ -825,28 +828,10 @@ function drawPerspective(
     const fy = (y + 0.5) * yStep;
     for (let x = 0; x < outW; x++) {
       const p = inv((x + 0.5) * xStep, fy);
-      // Bilinear sample in source space, optionally curved (page-curl dewarp).
+      // Sample in source space, optionally curved (page-curl dewarp).
       const sx = clamp(applyCurve(p.x, sw, dewarpStrength), 0, sw - 1);
       const sy = clamp(p.y, 0, sh - 1);
-      const x0 = Math.floor(sx);
-      const y0 = Math.floor(sy);
-      const x1 = Math.min(x0 + 1, sw - 1);
-      const y1 = Math.min(y0 + 1, sh - 1);
-      const fx = sx - x0;
-      const fy2 = sy - y0;
-      const i00 = (y0 * sw + x0) * 4;
-      const i10 = (y0 * sw + x1) * 4;
-      const i01 = (y1 * sw + x0) * 4;
-      const i11 = (y1 * sw + x1) * 4;
-      const w00 = (1 - fx) * (1 - fy2);
-      const w10 = fx * (1 - fy2);
-      const w01 = (1 - fx) * fy2;
-      const w11 = fx * fy2;
-      const oi = (y * outW + x) * 4;
-      o[oi] = s[i00] * w00 + s[i10] * w10 + s[i01] * w01 + s[i11] * w11;
-      o[oi + 1] = s[i00 + 1] * w00 + s[i10 + 1] * w10 + s[i01 + 1] * w01 + s[i11 + 1] * w11;
-      o[oi + 2] = s[i00 + 2] * w00 + s[i10 + 2] * w10 + s[i01 + 2] * w01 + s[i11 + 2] * w11;
-      o[oi + 3] = 255;
+      writeSample(s, sw, sh, sx, sy, o, (y * outW + x) * 4, bicubic);
     }
   }
 
@@ -877,6 +862,7 @@ function drawMeshPerspective(
   const { top, bottom, left, right } = devs;
   const xStep = logicalW / outW;
   const yStep = logicalH / outH;
+  const bicubic = isUpscale(h, outW, logicalW, logicalH);
 
   const uArr = new Float64Array(outW);
   const lxArr = new Float64Array(outW);
@@ -922,25 +908,7 @@ function drawMeshPerspective(
         0,
         sh - 1,
       );
-      const x0 = Math.floor(sx);
-      const y0 = Math.floor(sy);
-      const x1 = Math.min(x0 + 1, sw - 1);
-      const y1 = Math.min(y0 + 1, sh - 1);
-      const fx = sx - x0;
-      const fy2 = sy - y0;
-      const i00 = (y0 * sw + x0) * 4;
-      const i10 = (y0 * sw + x1) * 4;
-      const i01 = (y1 * sw + x0) * 4;
-      const i11 = (y1 * sw + x1) * 4;
-      const w00 = (1 - fx) * (1 - fy2);
-      const w10 = fx * (1 - fy2);
-      const w01 = (1 - fx) * fy2;
-      const w11 = fx * fy2;
-      const oi = (y * outW + x) * 4;
-      o[oi] = s[i00] * w00 + s[i10] * w10 + s[i01] * w01 + s[i11] * w11;
-      o[oi + 1] = s[i00 + 1] * w00 + s[i10 + 1] * w10 + s[i01 + 1] * w01 + s[i11 + 1] * w11;
-      o[oi + 2] = s[i00 + 2] * w00 + s[i10 + 2] * w10 + s[i01 + 2] * w01 + s[i11 + 2] * w11;
-      o[oi + 3] = 255;
+      writeSample(s, sw, sh, sx, sy, o, (y * outW + x) * 4, bicubic);
     }
   }
 
@@ -1090,7 +1058,7 @@ async function tryWorkerWarp(
   filter: FilterMode,
   adjust?: Adjust,
   shadow?: boolean,
-  sharpen?: boolean,
+  sharpen?: number,
   edges?: Float32Array,
 ): Promise<HTMLCanvasElement | null> {
   try {
@@ -1111,7 +1079,7 @@ async function tryWorkerWarp(
       filter,
       adjust,
       shadow: !!shadow,
-      sharpen: !!sharpen,
+      sharpen: sharpen ?? 0,
     });
     const c = document.createElement("canvas");
     c.width = pxW;
@@ -1133,7 +1101,8 @@ type WarpPolyArgs = {
   adjust?: Adjust;
   maxDim?: number;
   shadow?: boolean;
-  sharpen?: boolean;
+  /** Unsharp-mask amount; 0 or undefined leaves the pixels alone. */
+  sharpen?: number;
   /** Render the output canvas at a higher pixel density than the logical page
    *  size (e.g. 200 DPI vs the default 72 DPI) without changing the returned
    *  width/height, which stay as the PDF page size in points. */

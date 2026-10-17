@@ -9,7 +9,7 @@ import type { ExportFormat, ExportResult } from "@/lib/export";
 import { warpPoly } from "@/lib/image";
 import { ocrImage } from "@/lib/ocr";
 import { cn, formatBytes } from "@/lib/utils";
-import { activeCurves } from "@/lib/types";
+import { activeCurves, activeSharpen } from "@/lib/types";
 import type { ScanPage } from "@/lib/types";
 
 const FORMATS: { value: ExportFormat; label: string }[] = [
@@ -91,7 +91,7 @@ export function ExportSheet({
             filter: page.filter,
             adjust: page.adjust,
             shadow: page.shadow,
-            sharpen: page.sharpen,
+            sharpen: activeSharpen(page),
             rotation: page.rotation ?? 0,
             dewarpStrength: page.dewarpStrength ?? 0,
             curves: activeCurves(page),

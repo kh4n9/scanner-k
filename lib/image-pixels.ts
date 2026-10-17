@@ -619,9 +619,9 @@ function adaptiveThreshold(d: Uint8ClampedArray, w: number, h: number) {
 export function isNeutralFilter(
   filter: FilterMode,
   adjust?: Adjust,
-  opts?: { shadow?: boolean; sharpen?: boolean },
+  opts?: { shadow?: boolean; sharpen?: number },
 ): boolean {
-  if (opts?.shadow || opts?.sharpen) return false;
+  if (opts?.shadow || (opts?.sharpen ?? 0) > 0) return false;
   if (filter !== "original") return false;
   const a = normalizeAdjust(adjust);
   return a.brightness === 1 && a.contrast === 1 && a.saturation === 1;
@@ -635,18 +635,18 @@ export function applyFilterRgba(
   h: number,
   filter: FilterMode,
   adjust?: Adjust,
-  opts?: { shadow?: boolean; sharpen?: boolean },
+  opts?: { shadow?: boolean; sharpen?: number },
 ): boolean {
   if (isNeutralFilter(filter, adjust, opts)) return false;
 
   const a = normalizeAdjust(adjust);
   const wantShadow = !!opts?.shadow;
-  const wantSharpen = !!opts?.sharpen;
+  const sharpenAmount = opts?.sharpen ?? 0;
   const isGray = filter === "grayscale";
   const isBw = filter === "bw";
 
   if (wantShadow) normalizeBackground(d, w, h);
-  if (wantSharpen) unsharpMask(d, w, h);
+  if (sharpenAmount > 0) unsharpMask(d, w, h, sharpenAmount);
 
   if (isBw) {
     adaptiveThreshold(d, w, h);
@@ -675,6 +675,123 @@ export function applyFilterRgba(
   return true;
 }
 
+/**
+ * Whether the render is putting more output pixels on the page than the source
+ * has. Read off the homography's own step at the middle of the page, so every
+ * sampler decides identically without another field on the wire.
+ */
+export function isUpscale(
+  h: number[],
+  outW: number,
+  logicalW: number,
+  logicalH: number,
+): boolean {
+  const cx = logicalW / 2;
+  const cy = logicalH / 2;
+  const at = (x: number, y: number) => {
+    const d = h[6] * x + h[7] * y + h[8];
+    return { x: (h[0] * x + h[1] * y + h[2]) / d, y: (h[3] * x + h[4] * y + h[5]) / d };
+  };
+  const p = at(cx, cy);
+  const q = at(cx + 1, cy);
+  const step = Math.hypot(q.x - p.x, q.y - p.y);
+  if (step < 1e-6) return false;
+  // Output pixels per source pixel; above 1 the source is being stretched.
+  return outW / logicalW / step > 1.05;
+}
+
+/**
+ * Write one output pixel from the source at (sx, sy).
+ *
+ * Bilinear by default, and Catmull-Rom cubic when the render is upscaling.
+ * That is the case bilinear is worst at and the case that matters here: a page
+ * photographed at 2 MP and exported at 200 DPI is being stretched, and
+ * bilinear's soft two-pixel ramp is what makes small text look blurred. The
+ * cubic kernel crosses an edge in about half the distance, and its slight
+ * overshoot reads as acutance. Downscaling keeps bilinear — there is no detail
+ * to recover, and the ringing would be a liability.
+ */
+export function writeSample(
+  s: Uint8ClampedArray,
+  sw: number,
+  sh: number,
+  sx: number,
+  sy: number,
+  o: Uint8ClampedArray,
+  oi: number,
+  bicubic: boolean,
+) {
+  const x1 = Math.floor(sx);
+  const y1 = Math.floor(sy);
+  const fx = sx - x1;
+  const fy = sy - y1;
+
+  if (!bicubic) {
+    const x0 = x1;
+    const y0 = y1;
+    const xb = Math.min(x0 + 1, sw - 1);
+    const yb = Math.min(y0 + 1, sh - 1);
+    const i00 = (y0 * sw + x0) * 4;
+    const i10 = (y0 * sw + xb) * 4;
+    const i01 = (yb * sw + x0) * 4;
+    const i11 = (yb * sw + xb) * 4;
+    const w00 = (1 - fx) * (1 - fy);
+    const w10 = fx * (1 - fy);
+    const w01 = (1 - fx) * fy;
+    const w11 = fx * fy;
+    o[oi] = s[i00] * w00 + s[i10] * w10 + s[i01] * w01 + s[i11] * w11;
+    o[oi + 1] = s[i00 + 1] * w00 + s[i10 + 1] * w10 + s[i01 + 1] * w01 + s[i11 + 1] * w11;
+    o[oi + 2] = s[i00 + 2] * w00 + s[i10 + 2] * w10 + s[i01 + 2] * w01 + s[i11 + 2] * w11;
+    o[oi + 3] = 255;
+    return;
+  }
+
+  // Catmull-Rom (a = -1/2). Edge taps clamp to the border, which is the same
+  // extension the bilinear path uses.
+  const xm = x1 > 0 ? x1 - 1 : 0;
+  const x2 = x1 + 1 < sw ? x1 + 1 : sw - 1;
+  const x3 = x1 + 2 < sw ? x1 + 2 : sw - 1;
+  const ym = y1 > 0 ? y1 - 1 : 0;
+  const y2 = y1 + 1 < sh ? y1 + 1 : sh - 1;
+  const y3 = y1 + 2 < sh ? y1 + 2 : sh - 1;
+  const wx0 = ((-0.5 * fx + 1) * fx - 0.5) * fx;
+  const wx1 = (1.5 * fx - 2.5) * fx * fx + 1;
+  const wx2 = ((-1.5 * fx + 2) * fx + 0.5) * fx;
+  const wx3 = (0.5 * fx - 0.5) * fx * fx;
+  const wy0 = ((-0.5 * fy + 1) * fy - 0.5) * fy;
+  const wy1 = (1.5 * fy - 2.5) * fy * fy + 1;
+  const wy2 = ((-1.5 * fy + 2) * fy + 0.5) * fy;
+  const wy3 = (0.5 * fy - 0.5) * fy * fy;
+  const r0 = ym * sw;
+  const r1 = y1 * sw;
+  const r2 = y2 * sw;
+  const r3 = y3 * sw;
+  for (let ch = 0; ch < 3; ch++) {
+    const c0 =
+      wx0 * s[(r0 + xm) * 4 + ch] +
+      wx1 * s[(r0 + x1) * 4 + ch] +
+      wx2 * s[(r0 + x2) * 4 + ch] +
+      wx3 * s[(r0 + x3) * 4 + ch];
+    const c1 =
+      wx0 * s[(r1 + xm) * 4 + ch] +
+      wx1 * s[(r1 + x1) * 4 + ch] +
+      wx2 * s[(r1 + x2) * 4 + ch] +
+      wx3 * s[(r1 + x3) * 4 + ch];
+    const c2 =
+      wx0 * s[(r2 + xm) * 4 + ch] +
+      wx1 * s[(r2 + x1) * 4 + ch] +
+      wx2 * s[(r2 + x2) * 4 + ch] +
+      wx3 * s[(r2 + x3) * 4 + ch];
+    const c3 =
+      wx0 * s[(r3 + xm) * 4 + ch] +
+      wx1 * s[(r3 + x1) * 4 + ch] +
+      wx2 * s[(r3 + x2) * 4 + ch] +
+      wx3 * s[(r3 + x3) * 4 + ch];
+    o[oi + ch] = wy0 * c0 + wy1 * c1 + wy2 * c2 + wy3 * c3;
+  }
+  o[oi + 3] = 255;
+}
+
 // Bilinear perspective sample: for every output pixel in the logical rectangle
 // [0..logicalW]x[0..logicalH], invert the homography `h` to find its source
 // coordinate and bilinearly interpolate the source RGBA. Mirrors `drawPerspective`
@@ -692,6 +809,7 @@ export function warpRgba(
   const out = new Uint8ClampedArray(outW * outH * 4);
   const xStep = logicalW / outW;
   const yStep = logicalH / outH;
+  const bicubic = isUpscale(h, outW, logicalW, logicalH);
 
   for (let y = 0; y < outH; y++) {
     const fy = (y + 0.5) * yStep;
@@ -700,25 +818,7 @@ export function warpRgba(
       const d = h[6] * lx + h[7] * fy + h[8];
       const sx = clamp((h[0] * lx + h[1] * fy + h[2]) / d, 0, sw - 1);
       const sy = clamp((h[3] * lx + h[4] * fy + h[5]) / d, 0, sh - 1);
-      const x0 = Math.floor(sx);
-      const y0 = Math.floor(sy);
-      const x1 = Math.min(x0 + 1, sw - 1);
-      const y1 = Math.min(y0 + 1, sh - 1);
-      const fx = sx - x0;
-      const fy2 = sy - y0;
-      const i00 = (y0 * sw + x0) * 4;
-      const i10 = (y0 * sw + x1) * 4;
-      const i01 = (y1 * sw + x0) * 4;
-      const i11 = (y1 * sw + x1) * 4;
-      const w00 = (1 - fx) * (1 - fy2);
-      const w10 = fx * (1 - fy2);
-      const w01 = (1 - fx) * fy2;
-      const w11 = fx * fy2;
-      const oi = (y * outW + x) * 4;
-      out[oi] = src[i00] * w00 + src[i10] * w10 + src[i01] * w01 + src[i11] * w11;
-      out[oi + 1] = src[i00 + 1] * w00 + src[i10 + 1] * w10 + src[i01 + 1] * w01 + src[i11 + 1] * w11;
-      out[oi + 2] = src[i00 + 2] * w00 + src[i10 + 2] * w10 + src[i01 + 2] * w01 + src[i11 + 2] * w11;
-      out[oi + 3] = 255;
+      writeSample(src, sw, sh, sx, sy, out, (y * outW + x) * 4, bicubic);
     }
   }
   return out;
@@ -882,6 +982,7 @@ export function warpMeshRgba(
   const { top, bottom, left, right } = devs;
   const xStep = logicalW / outW;
   const yStep = logicalH / outH;
+  const bicubic = isUpscale(h, outW, logicalW, logicalH);
 
   const uArr = new Float64Array(outW);
   const lxArr = new Float64Array(outW);
@@ -924,25 +1025,7 @@ export function warpMeshRgba(
         0,
         sh - 1,
       );
-      const x0 = Math.floor(sx);
-      const y0 = Math.floor(sy);
-      const x1 = Math.min(x0 + 1, sw - 1);
-      const y1 = Math.min(y0 + 1, sh - 1);
-      const fx = sx - x0;
-      const fy = sy - y0;
-      const i00 = (y0 * sw + x0) * 4;
-      const i10 = (y0 * sw + x1) * 4;
-      const i01 = (y1 * sw + x0) * 4;
-      const i11 = (y1 * sw + x1) * 4;
-      const w00 = (1 - fx) * (1 - fy);
-      const w10 = fx * (1 - fy);
-      const w01 = (1 - fx) * fy;
-      const w11 = fx * fy;
-      const oi = (y * outW + x) * 4;
-      out[oi] = src[i00] * w00 + src[i10] * w10 + src[i01] * w01 + src[i11] * w11;
-      out[oi + 1] = src[i00 + 1] * w00 + src[i10 + 1] * w10 + src[i01 + 1] * w01 + src[i11 + 1] * w11;
-      out[oi + 2] = src[i00 + 2] * w00 + src[i10 + 2] * w10 + src[i01 + 2] * w01 + src[i11 + 2] * w11;
-      out[oi + 3] = 255;
+      writeSample(src, sw, sh, sx, sy, out, (y * outW + x) * 4, bicubic);
     }
   }
   return out;
