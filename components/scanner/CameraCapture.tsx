@@ -189,6 +189,7 @@ export function CameraCapture({
             playsInline
             muted
             autoPlay
+            aria-label="Khung hình camera"
             className="h-full w-full object-contain"
           />
         )}

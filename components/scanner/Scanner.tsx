@@ -2,16 +2,14 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ArrowLeft, Eye, FilePlus2, Loader2, ScanHeart, ScanSearch } from "lucide-react";
+import dynamic from "next/dynamic";
+import { ArrowLeft, Eye, FilePlus2, Loader2, ScanHeart, ScanSearch, Undo2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet } from "@/components/ui/sheet";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { AddSourcePad } from "./AddSourcePad";
-import { CameraCapture } from "./CameraCapture";
-import { PageEditor } from "./PageEditor";
 import { PagesGrid } from "./PagesGrid";
-import { ExportSheet } from "./ExportSheet";
 import { PaperBulkControl } from "./PaperBulkControl";
-import { PreviewSheet } from "./PreviewSheet";
 import { computeAutoAdjust, detectDocBoundary, evictImage, fileToSrc } from "@/lib/image";
 import { uid } from "@/lib/utils";
 import { NEUTRAL_ADJUST } from "@/lib/types";
@@ -23,6 +21,26 @@ import {
 } from "@/lib/db";
 import type { DocMeta, StoredDoc, StoredPage } from "@/lib/db";
 import type { Adjust, EdgeCurves, PaperShape, Point, ScanPage } from "@/lib/types";
+
+// Heavy, on-demand surfaces. Keeping them out of the /scan entry chunk means a
+// first-time visitor does not download pdf-lib (export), Tesseract's wrapper
+// (OCR) or the full editor before adding a single page.
+const PageEditor = dynamic(
+  () => import("./PageEditor").then((m) => m.PageEditor),
+  { ssr: false },
+);
+const ExportSheet = dynamic(
+  () => import("./ExportSheet").then((m) => m.ExportSheet),
+  { ssr: false },
+);
+const PreviewSheet = dynamic(
+  () => import("./PreviewSheet").then((m) => m.PreviewSheet),
+  { ssr: false },
+);
+const CameraCapture = dynamic(
+  () => import("./CameraCapture").then((m) => m.CameraCapture),
+  { ssr: false },
+);
 
 /** Turn an in-memory page into a persisted record, reusing the cached image
  *  bytes when possible and otherwise fetching from the object URL. */
@@ -94,6 +112,18 @@ export function Scanner() {
   const [showPreview, setShowPreview] = React.useState(false);
   const [adding, setAdding] = React.useState(false);
   const [redetecting, setRedetecting] = React.useState(false);
+  const [renaming, setRenaming] = React.useState(false);
+  const [draftName, setDraftName] = React.useState("");
+  const [confirmDeleteDoc, setConfirmDeleteDoc] = React.useState(false);
+
+  // One pending page deletion at a time, with a few seconds to undo it. The
+  // object URL is only revoked once that window closes, otherwise "Hoàn tác"
+  // would bring back a page pointing at a dead blob.
+  const [undo, setUndo] = React.useState<{ page: ScanPage; index: number } | null>(
+    null,
+  );
+  const undoRef = React.useRef<{ page: ScanPage; index: number } | null>(null);
+  const undoTimer = React.useRef<number | null>(null);
 
   // Persistence / multi-document state.
   const [docId, setDocId] = React.useState<string | null>(null);
@@ -114,6 +144,15 @@ export function Scanner() {
   React.useEffect(() => {
     pagesRef.current = pages;
   }, [pages]);
+
+  // Revoke every object URL on unmount. Without this a long session that adds
+  // and removes pages keeps the blobs alive until the tab is closed.
+  React.useEffect(
+    () => () => {
+      revokePages(pagesRef.current);
+    },
+    [],
+  );
 
   const addFile = React.useCallback(async (file: File) => {
     const src = await fileToSrc(file);
@@ -216,16 +255,61 @@ export function Scanner() {
     setPages((prev) => prev.map((p) => ({ ...p, paper })));
   }, []);
 
-  const deletePage = React.useCallback((id: string) => {
+  /** Commit a pending deletion for good: revoke the page's blob URL. */
+  const finalizeUndo = React.useCallback(() => {
+    const current = undoRef.current;
+    if (undoTimer.current !== null) {
+      window.clearTimeout(undoTimer.current);
+      undoTimer.current = null;
+    }
+    if (current) {
+      URL.revokeObjectURL(current.page.src);
+      evictImage(current.page.src);
+    }
+    undoRef.current = null;
+    setUndo(null);
+  }, []);
+
+  const deletePage = React.useCallback(
+    (id: string) => {
+      const current = pagesRef.current;
+      const index = current.findIndex((p) => p.id === id);
+      if (index < 0) return;
+      // Deleting twice in a row commits the earlier one.
+      finalizeUndo();
+      const page = current[index];
+      setPages(current.filter((p) => p.id !== id));
+      const pending = { page, index };
+      undoRef.current = pending;
+      setUndo(pending);
+      undoTimer.current = window.setTimeout(finalizeUndo, 6000);
+    },
+    [finalizeUndo],
+  );
+
+  const undoDelete = React.useCallback(() => {
+    const current = undoRef.current;
+    if (!current) return;
+    if (undoTimer.current !== null) {
+      window.clearTimeout(undoTimer.current);
+      undoTimer.current = null;
+    }
+    undoRef.current = null;
+    setUndo(null);
     setPages((prev) => {
-      const target = prev.find((p) => p.id === id);
-      if (target) {
-        URL.revokeObjectURL(target.src);
-        evictImage(target.src);
-      }
-      return prev.filter((p) => p.id !== id);
+      const next = [...prev];
+      next.splice(Math.min(current.index, next.length), 0, current.page);
+      return next;
     });
   }, []);
+
+  // Release the blob URL of a page still pending deletion when leaving the page.
+  React.useEffect(
+    () => () => {
+      if (undoTimer.current !== null) window.clearTimeout(undoTimer.current);
+    },
+    [],
+  );
 
   const movePage = React.useCallback((id: string, dir: -1 | 1) => {
     setPages((prev) => {
@@ -335,14 +419,19 @@ export function Scanner() {
     setDocName("Tài liệu mới");
   };
 
-  const renameDoc = () => {
-    const name = window.prompt("Tên tài liệu", docName);
-    if (name && name.trim()) setDocName(name.trim());
+  const startRename = () => {
+    setDraftName(docName);
+    setRenaming(true);
+  };
+
+  const commitRename = () => {
+    const name = draftName.trim();
+    if (name) setDocName(name);
+    setRenaming(false);
   };
 
   const deleteCurrentDoc = async () => {
     if (!docId) return;
-    if (!window.confirm("Xóa tài liệu này?")) return;
     await deleteDocument(docId).catch(() => {});
     revokePages(pages);
     setPages([]);
@@ -355,7 +444,7 @@ export function Scanner() {
   const showDocBar = !restoring && (docs.length > 0 || docId !== null);
 
   return (
-    <div className="mx-auto w-full max-w-4xl px-4 pb-28 pt-5">
+    <div className="mx-auto w-full max-w-4xl px-4 pb-[calc(9.5rem+env(safe-area-inset-bottom))] pt-5 sm:pb-[calc(6.5rem+env(safe-area-inset-bottom))]">
       <header className="mb-5 flex items-center gap-3">
         <Link
           href="/"
@@ -364,8 +453,31 @@ export function Scanner() {
         >
           <ArrowLeft className="h-5 w-5" />
         </Link>
-        <div>
-          <h1 className="text-lg font-semibold leading-tight">{docName}</h1>
+        <div className="min-w-0 flex-1">
+          {renaming ? (
+            <input
+              autoFocus
+              value={draftName}
+              maxLength={80}
+              aria-label="Tên tài liệu"
+              onChange={(e) => setDraftName(e.target.value)}
+              onBlur={commitRename}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitRename();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  setRenaming(false);
+                }
+              }}
+              className="h-9 w-full rounded-lg border border-border bg-transparent px-2 text-lg font-semibold focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          ) : (
+            <h1 className="truncate text-lg font-semibold leading-tight">
+              {docName}
+            </h1>
+          )}
           <p className="text-xs text-muted-foreground">
             {pages.length === 0
               ? "Chưa có trang"
@@ -395,10 +507,15 @@ export function Scanner() {
           <Button variant="secondary" size="sm" onClick={newDoc}>
             Mới
           </Button>
-          <Button variant="secondary" size="sm" onClick={renameDoc}>
+          <Button variant="secondary" size="sm" onClick={startRename}>
             Đổi tên
           </Button>
-          <Button variant="secondary" size="sm" onClick={deleteCurrentDoc} disabled={!docId}>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setConfirmDeleteDoc(true)}
+            disabled={!docId}
+          >
             Xóa
           </Button>
         </div>
@@ -434,29 +551,35 @@ export function Scanner() {
         </p>
       ) : pages.length === 0 ? (
         <section className="relative overflow-hidden rounded-2xl border border-border bg-card px-6 py-14 text-center">
-          <div className="scan-beam" />
-          <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/15 text-primary">
-            <ScanHeart className="h-7 w-7" />
-          </div>
-          <h2 className="text-xl font-semibold">Quét tài liệu thành PDF</h2>
-          <p className="mx-auto mt-2 max-w-sm text-sm text-muted-foreground">
-            Chụp hoặc tải ảnh các trang giấy, chỉnh cắt và gộp thành một file
-            PDF ngay trên thiết bị của bạn.
-          </p>
-          <div className="mx-auto mt-6 max-w-md">
-            <AddSourcePad
-              onFiles={addFiles}
-              onCamera={() => {
-                setShowCapture(true);
-                setShowAdd(false);
-              }}
-            />
-          </div>
-          {adding && (
-            <p className="mt-4 flex items-center justify-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" /> Đang thêm ảnh…
+          <div className="scan-beam" aria-hidden="true" />
+          <div className="relative z-10">
+            <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/15 text-primary">
+              <ScanHeart className="h-7 w-7" aria-hidden="true" />
+            </div>
+            <h2 className="text-xl font-semibold">Quét tài liệu thành PDF</h2>
+            <p className="mx-auto mt-2 max-w-sm text-sm text-muted-foreground">
+              Chụp hoặc tải ảnh các trang giấy, chỉnh cắt và gộp thành một file
+              PDF ngay trên thiết bị của bạn.
             </p>
-          )}
+            <div className="mx-auto mt-6 max-w-md">
+              <AddSourcePad
+                onFiles={addFiles}
+                onCamera={() => {
+                  setShowCapture(true);
+                  setShowAdd(false);
+                }}
+              />
+            </div>
+            {adding && (
+              <p
+                role="status"
+                className="mt-4 flex items-center justify-center gap-2 text-sm text-muted-foreground"
+              >
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />{" "}
+                Đang thêm ảnh…
+              </p>
+            )}
+          </div>
         </section>
       ) : (
         <>
@@ -479,30 +602,50 @@ export function Scanner() {
         </>
       )}
 
-      <div className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-background/90 p-3 backdrop-blur">
-        <div className="mx-auto flex max-w-4xl flex-wrap gap-2">
+      {undo && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="pointer-events-none fixed inset-x-0 bottom-[calc(9rem+env(safe-area-inset-bottom))] z-40 flex justify-center px-4 sm:bottom-[calc(5.5rem+env(safe-area-inset-bottom))]"
+        >
+          <div className="pointer-events-auto fade-in flex items-center gap-3 rounded-full border border-border bg-card px-4 py-2 text-sm shadow-lg">
+            <span>Đã xóa 1 trang</span>
+            <button
+              type="button"
+              onClick={undoDelete}
+              className="inline-flex items-center gap-1 rounded-full px-2 py-1 font-medium text-primary transition-colors hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring"
+            >
+              <Undo2 className="h-4 w-4" aria-hidden="true" />
+              Hoàn tác
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="pb-safe-bar fixed inset-x-0 bottom-0 z-30 border-t border-border bg-background/90 px-3 pt-3 backdrop-blur">
+        <div className="mx-auto grid max-w-4xl grid-cols-2 gap-2 sm:flex">
           <Button
             variant="secondary"
             size="lg"
-            className="min-w-[8.5rem] flex-1"
+            className="sm:flex-1"
             onClick={() => setShowAdd(true)}
           >
-            <FilePlus2 className="h-5 w-5" />
+            <FilePlus2 className="h-5 w-5" aria-hidden="true" />
             Thêm trang
           </Button>
           <Button
             variant="secondary"
             size="lg"
-            className="min-w-[8rem] flex-1"
+            className="sm:flex-1"
             disabled={pages.length === 0}
             onClick={() => setShowPreview(true)}
           >
-            <Eye className="h-5 w-5" />
+            <Eye className="h-5 w-5" aria-hidden="true" />
             Xem trước
           </Button>
           <Button
             size="lg"
-            className="min-w-[9rem] flex-1"
+            className="col-span-2 sm:col-span-1 sm:flex-1"
             disabled={pages.length === 0}
             onClick={() => setShowExport(true)}
           >
@@ -555,21 +698,37 @@ export function Scanner() {
         />
       )}
 
-      <ExportSheet
-        open={showExport}
-        onClose={() => setShowExport(false)}
-        pages={pages}
-      />
+      {/* Mounted only while open: next/dynamic loads its chunk when the
+          component first renders, so keeping them always-mounted forced the
+          pdf-lib + Tesseract chunk (~424 KB) onto every first visit. */}
+      {showExport && (
+        <ExportSheet
+          open
+          onClose={() => setShowExport(false)}
+          pages={pages}
+        />
+      )}
 
-      <PreviewSheet
-        open={showPreview}
-        onClose={() => setShowPreview(false)}
-        pages={pages}
-        onApplyPaperToAll={applyPaperToAll}
-        onExport={() => {
-          setShowPreview(false);
-          setShowExport(true);
-        }}
+      {showPreview && (
+        <PreviewSheet
+          open
+          onClose={() => setShowPreview(false)}
+          pages={pages}
+          onApplyPaperToAll={applyPaperToAll}
+          onExport={() => {
+            setShowPreview(false);
+            setShowExport(true);
+          }}
+        />
+      )}
+
+      <ConfirmDialog
+        open={confirmDeleteDoc}
+        title="Xóa tài liệu?"
+        description={`“${docName}” và toàn bộ trang trong đó sẽ bị xóa khỏi thiết bị. Không thể hoàn tác.`}
+        confirmLabel="Xóa tài liệu"
+        onConfirm={deleteCurrentDoc}
+        onClose={() => setConfirmDeleteDoc(false)}
       />
     </div>
   );

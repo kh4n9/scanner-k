@@ -1,8 +1,9 @@
-// Pure, DOM-free pixel operations shared by the main thread and the image
-// Web Worker. Nothing here touches `document`, `canvas`, or the DOM, so it can
-// be imported by a worker bundle. This is the single implementation of the
-// filter pipeline: the main-thread path in `image.ts` calls `applyFilterRgba`
-// too, so a worker render and a main-thread render can never drift apart.
+// Pure, DOM-free pixel operations: the single implementation of the warp
+// samplers and the filter pipeline. Nothing here touches `document`, `canvas`,
+// or the DOM. `image.ts` wraps these in a canvas and calls `applyFilterRgba`, so
+// there is exactly one copy of the math. (These used to be shared with an
+// `image.worker.ts`; see the note in `image.ts` in `renderPoly` for why that
+// worker was removed.)
 
 import type { Adjust, EdgeCurves, FilterMode, Point } from "./types";
 

@@ -18,6 +18,27 @@ function sanitize(name: string): string {
   return s.slice(0, 80) || "trang";
 }
 
+/** Make `name` unique within `used` by appending "-2", "-3", … before the
+ *  extension. Two pages imported from the same file (or two shots of the same
+ *  sheet) would otherwise become duplicate ZIP entries, which some extractors
+ *  silently collapse into one file. */
+function uniqueName(name: string, used: Set<string>): string {
+  if (!used.has(name)) {
+    used.add(name);
+    return name;
+  }
+  const dot = name.lastIndexOf(".");
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : "";
+  for (let n = 2; ; n++) {
+    const candidate = `${stem}-${n}${ext}`;
+    if (!used.has(candidate)) {
+      used.add(candidate);
+      return candidate;
+    }
+  }
+}
+
 /** Build the chosen export as a single downloadable blob (PDF / one image / a
  *  ZIP archive of images when there are several pages). */
 export async function buildExport(
@@ -41,6 +62,7 @@ export async function buildExport(
   const ext = format === "png" ? "png" : "jpg";
   const renderScale = (opts.dpi ?? 200) / 72;
   const files: { name: string; data: Uint8Array<ArrayBuffer> }[] = [];
+  const usedNames = new Set<string>();
 
   for (const page of pages) {
     const { canvas } = await warpPoly({
@@ -58,7 +80,7 @@ export async function buildExport(
     });
     const blob = await canvasToBlob(canvas, opts.quality, mime);
     const data = new Uint8Array(await blob.arrayBuffer());
-    files.push({ name: `${sanitize(page.name)}.${ext}`, data });
+    files.push({ name: uniqueName(`${sanitize(page.name)}.${ext}`, usedNames), data });
   }
 
   if (files.length === 1) {

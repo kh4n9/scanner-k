@@ -20,7 +20,6 @@ import type {
   Point,
   Rotate,
 } from "./types";
-import { warpInWorker } from "./warpWorker";
 
 // Decoded sources, keyed by `src`. Without this every render decodes the JPEG
 // again from scratch, and the same page gets rendered by the grid, the editor
@@ -87,8 +86,7 @@ export const FULL_BOUNDARY: Point[] = [
 const MM_TO_PT = 72 / 25.4;
 
 // Draw the filtered result back onto the canvas. The pixel work itself lives in
-// `image-pixels.ts` so the main-thread and Web-Worker paths can never drift
-// apart, and so this function never needs its own copy of the pipeline.
+// `image-pixels.ts` so this function never needs its own copy of the pipeline.
 export function applyFilter(
   canvas: HTMLCanvasElement,
   filter: FilterMode,
@@ -1046,53 +1044,6 @@ function renderRotatedSource(
   return { canvas: c, width, height, mapNorm };
 }
 
-// Run the heavy warp + filter in the image Web Worker. Returns null (falling
-// back to the main thread) if the worker is unavailable or the task fails.
-async function tryWorkerWarp(
-  sourceCanvas: HTMLCanvasElement,
-  h: number[],
-  pxW: number,
-  pxH: number,
-  tw: number,
-  th: number,
-  filter: FilterMode,
-  adjust?: Adjust,
-  shadow?: boolean,
-  sharpen?: number,
-  edges?: Float32Array,
-): Promise<HTMLCanvasElement | null> {
-  try {
-    const W = sourceCanvas.width;
-    const H = sourceCanvas.height;
-    const imgData = sourceCanvas.getContext("2d")!.getImageData(0, 0, W, H);
-    const out = await warpInWorker({
-      type: "warp",
-      src: imgData.data.buffer as ArrayBuffer,
-      srcW: W,
-      srcH: H,
-      h,
-      edges,
-      outW: pxW,
-      outH: pxH,
-      logicalW: tw,
-      logicalH: th,
-      filter,
-      adjust,
-      shadow: !!shadow,
-      sharpen: sharpen ?? 0,
-    });
-    const c = document.createElement("canvas");
-    c.width = pxW;
-    c.height = pxH;
-    const ctx = c.getContext("2d")!;
-    ctx.imageSmoothingQuality = "high";
-    ctx.putImageData(new ImageData(out, pxW, pxH), 0, 0);
-    return c;
-  } catch {
-    return null;
-  }
-}
-
 type WarpPolyArgs = {
   src: string;
   boundary?: Point[];
@@ -1216,6 +1167,17 @@ async function renderPoly({
   // rectangle edge-to-edge (including the top), preserves orientation and draws
   // from the full-resolution source, so it stays crisp. Each cell corner maps
   // through the exact homography, which makes the mesh seamless.
+  //
+  // This runs on the main thread, deliberately. There used to be an
+  // `image.worker.ts` twin of this sampler reached through
+  // `new Worker(new URL("./image.worker.ts", import.meta.url))`, but Turbopack
+  // does not compile that reference: it emits the file as a static asset (raw
+  // TypeScript, served as `video/mp2t`), so the worker never started and every
+  // render silently fell back to here anyway. It also leaked: a failed worker was
+  // never reset, so a later `postMessage` could park a promise forever and wedge
+  // the render queue. Re-adding off-thread rendering needs a worker form the
+  // bundler actually supports — verify the emitted chunk is JavaScript before
+  // trusting it.
   const corners = quadCorners(pts);
   // Null when every edge is straight — then the homography below is already
   // exact and this render is byte-for-byte what it was before the mesh existed.
@@ -1223,7 +1185,6 @@ async function renderPoly({
     ? edgePolylines(corners, curves, pts.length > 4 ? pts : undefined)
     : null;
   let canvas: HTMLCanvasElement | null = null;
-  let filterApplied = false;
   if (corners) {
     const h = homographyMatrix(
       [
@@ -1238,69 +1199,30 @@ async function renderPoly({
       // The homography stays the baseline and the edges only add their bow on
       // top of it, so an angled photo keeps its perspective correction.
       const devs = edges ? buildEdgeDeviations(h, edges, pxW, pxH, tw, th) : null;
-      // When dewarp is active the curve lives only in the main-thread sampler,
-      // so bypass the worker and render here (also applies the filter below).
-      if (dewarpStrength !== 0) {
-        const { c } = make(pxW, pxH);
-        if (devs) {
-          drawMeshPerspective(
-            c.getContext("2d")!,
-            sourceCanvas,
-            h,
-            devs,
-            pxW,
-            pxH,
-            tw,
-            th,
-            dewarpStrength,
-          );
-        } else {
-          const inv = (x: number, y: number) => {
-            const d = h[6] * x + h[7] * y + h[8];
-            return {
-              x: (h[0] * x + h[1] * y + h[2]) / d,
-              y: (h[3] * x + h[4] * y + h[5]) / d,
-            };
-          };
-          drawPerspective(c.getContext("2d")!, sourceCanvas, inv, pxW, pxH, tw, th, dewarpStrength);
-        }
-        canvas = c;
-      } else {
-        // Try the off-main-thread warp first; fall back to the main-thread path
-        // below (which also applies the filter) if the worker can't run.
-        const workerCanvas = await tryWorkerWarp(
+      const { c } = make(pxW, pxH);
+      if (devs) {
+        drawMeshPerspective(
+          c.getContext("2d")!,
           sourceCanvas,
           h,
+          devs,
           pxW,
           pxH,
           tw,
           th,
-          filter,
-          adjust,
-          shadow,
-          sharpen,
-          edges ?? undefined,
+          dewarpStrength,
         );
-        if (workerCanvas) {
-          canvas = workerCanvas;
-          filterApplied = true;
-        } else {
-          const { c } = make(pxW, pxH);
-          if (devs) {
-            drawMeshPerspective(c.getContext("2d")!, sourceCanvas, h, devs, pxW, pxH, tw, th);
-          } else {
-            const inv = (x: number, y: number) => {
-              const d = h[6] * x + h[7] * y + h[8];
-              return {
-                x: (h[0] * x + h[1] * y + h[2]) / d,
-                y: (h[3] * x + h[4] * y + h[5]) / d,
-              };
-            };
-            drawPerspective(c.getContext("2d")!, sourceCanvas, inv, pxW, pxH, tw, th);
-          }
-          canvas = c;
-        }
+      } else {
+        const inv = (x: number, y: number) => {
+          const d = h[6] * x + h[7] * y + h[8];
+          return {
+            x: (h[0] * x + h[1] * y + h[2]) / d,
+            y: (h[3] * x + h[4] * y + h[5]) / d,
+          };
+        };
+        drawPerspective(c.getContext("2d")!, sourceCanvas, inv, pxW, pxH, tw, th, dewarpStrength);
       }
+      canvas = c;
     }
   }
 
@@ -1352,7 +1274,7 @@ async function renderPoly({
     canvas = c;
   }
 
-  if (!filterApplied) applyFilter(canvas, filter, adjust, { shadow, sharpen });
+  applyFilter(canvas, filter, adjust, { shadow, sharpen });
   return { canvas, width: tw, height: th };
 }
 

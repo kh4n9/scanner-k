@@ -48,6 +48,9 @@ export function PagePreview({
   className?: string;
 }) {
   const [shot, setShot] = React.useState<string | null>(null);
+  // Blob URLs instead of data URLs: a base64 string is ~33% larger than the
+  // bytes it encodes and stays alive in React state until replaced.
+  const shotRef = React.useRef<string | null>(null);
   const hostRef = React.useRef<HTMLDivElement>(null);
   // Without an IntersectionObserver (very old browsers) every page counts as in
   // range, which is the previous behaviour.
@@ -96,6 +99,15 @@ export function PagePreview({
     return () => observer.disconnect();
   }, []);
 
+  // Release the last rendered preview when this cell goes away.
+  React.useEffect(
+    () => () => {
+      if (shotRef.current) URL.revokeObjectURL(shotRef.current);
+      shotRef.current = null;
+    },
+    [],
+  );
+
   React.useEffect(() => {
     // Out of range: nothing to render. The image element is unmounted below too,
     // which is what actually releases the decoded preview — no state to clear,
@@ -121,7 +133,18 @@ export function PagePreview({
         maxDim,
       })
         .then(({ canvas }) => {
-          if (active) setShot(canvas.toDataURL("image/jpeg", 0.85));
+          if (!active) return;
+          canvas.toBlob(
+            (blob) => {
+              if (!active || !blob) return;
+              const url = URL.createObjectURL(blob);
+              if (shotRef.current) URL.revokeObjectURL(shotRef.current);
+              shotRef.current = url;
+              setShot(url);
+            },
+            "image/jpeg",
+            0.85,
+          );
         })
         .catch(() => {
           if (active) setShot(null);

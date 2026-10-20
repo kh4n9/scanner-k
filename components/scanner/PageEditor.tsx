@@ -12,7 +12,7 @@ import {
   loadImage,
 } from "@/lib/image";
 import { detectWithOpenCv } from "@/lib/opencv";
-import { PAPER_OPTIONS, paperFor } from "@/lib/paper";
+import { PAPER_OPTIONS, DEFAULT_CUSTOM_MM, paperFor } from "@/lib/paper";
 import type {
   Adjust,
   EdgeCurves,
@@ -315,7 +315,11 @@ export function PageEditor({
     const ys = boundary.map((p) => p.y);
     const bw = Math.max(...xs) - Math.min(...xs);
     const bh = Math.max(...ys) - Math.min(...ys);
-    setRotation(Math.abs(bw - bh) > 0.02 && bw > bh ? 90 : 0);
+    const landscapeDoc = Math.abs(bw - bh) > 0.02 && bw > bh;
+    // 90 and 270 give the same aspect, so this cannot tell them apart from the
+    // boundary alone. Keep whichever sideways orientation the user already
+    // chose instead of silently flipping the page upside down on a second tap.
+    setRotation((r) => (landscapeDoc ? (r === 270 ? 270 : 90) : 0));
   };
 
   // The page as it is being edited, so the preview reflects uncommitted changes.
@@ -357,7 +361,18 @@ export function PageEditor({
   const hasCurves = curves.some((c) => c !== 0);
 
   const setCustomPaper = (w: number, h: number) => {
-    setPaper({ kind: "custom", widthMm: Math.round(w), heightMm: Math.round(h) });
+    // An emptied number input gives "" → 0 and a half-typed one gives NaN, and
+    // `paperDims` only guards with `Math.max(1, w)` — which happily propagates
+    // NaN into the canvas size and makes `createImageData` throw. Clamp to the
+    // range the inputs advertise, and fall back to A4 for a value that isn't a
+    // number at all.
+    const mm = (v: number, fallback: number) =>
+      Number.isFinite(v) ? Math.min(600, Math.max(40, Math.round(v))) : fallback;
+    setPaper({
+      kind: "custom",
+      widthMm: mm(w, DEFAULT_CUSTOM_MM.widthMm),
+      heightMm: mm(h, DEFAULT_CUSTOM_MM.heightMm),
+    });
   };
 
   const applyPreset = (f: FilterMode) => {
@@ -406,6 +421,10 @@ export function PageEditor({
         >
           {nat && box && boundary.length >= 4 && (
             <>
+              {/* The source is a blob URL rendered locally, so there is nothing
+                  for next/image to optimise, and this needs the exact intrinsic
+                  box the overlay coordinates are computed against. */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={page.src}
                 alt="Ảnh gốc"
@@ -520,9 +539,15 @@ export function PageEditor({
           {cvError && (
             <span className="text-xs text-destructive">{cvError}</span>
           )}
-          <IconButton aria-label="Đặt lại" className="h-8 w-8" onClick={() => setBoundary([
-            { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 },
-          ])}>
+          <IconButton aria-label="Đặt lại" className="h-8 w-8" onClick={() => {
+            setBoundary([
+              { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 },
+            ]);
+            // The reset drops any extra points, so an index past the new end
+            // would stay selected and leave "Xóa điểm" enabled with nothing to
+            // delete.
+            setSelected(null);
+          }}>
             <RotateCcw className="h-4 w-4" />
           </IconButton>
           <Button

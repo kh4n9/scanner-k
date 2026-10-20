@@ -28,8 +28,16 @@ function le16(v: number): [number, number] {
   return [v & 0xff, (v >>> 8) & 0xff];
 }
 
-/** Create a store-only ZIP archive. Rejects if the names are non-ASCII so the
- *  output is a well-formed ASCII archive (safe for ID3/PDF filenames). */
+// General-purpose bit 11 (the language-encoding / "EFST" flag) marks the entry
+// name as UTF-8, per the ZIP spec (PKWARE APPNOTE 6.3.0 §4.4.4). Every name is
+// encoded with TextEncoder, so setting it is what makes non-ASCII names — the
+// normal case for a Vietnamese document, e.g. "hợp đồng" — round-trip into the
+// archive instead of having to be rejected outright.
+const FLAG_UTF8 = 0x0800;
+
+/** Create a store-only ZIP archive. Entry names are written as UTF-8 and flagged
+ *  as such, so any language works; the caller is responsible for making the names
+ *  unique and free of characters the filesystem would reject. */
 export function createZip(files: ZipEntry[]): Uint8Array<ArrayBuffer> {
   const encoder = new TextEncoder();
   const localParts: Uint8Array[] = [];
@@ -39,16 +47,13 @@ export function createZip(files: ZipEntry[]): Uint8Array<ArrayBuffer> {
 
   for (const f of files) {
     const nameBytes = encoder.encode(f.name);
-    if (!/^[\x00-\x7f]*$/.test(f.name)) {
-      throw new Error("ZIP filename must be ASCII");
-    }
     const crc = crc32(f.data);
     const size = f.data.length;
 
     const local = new Uint8Array(30 + nameBytes.length);
     local.set([0x50, 0x4b, 0x03, 0x04]); // local file header signature
     local.set(le16(20), 4); // version needed
-    local.set(le16(0), 6); // flags
+    local.set(le16(FLAG_UTF8), 6); // flags
     local.set(le16(0), 8); // method (store)
     local.set(le16(0), 10); // mod time
     local.set(le16(0), 12); // mod date
@@ -66,7 +71,7 @@ export function createZip(files: ZipEntry[]): Uint8Array<ArrayBuffer> {
     central.set([0x50, 0x4b, 0x01, 0x02]); // central dir signature
     central.set(le16(20), 4); // version made by
     central.set(le16(20), 6); // version needed
-    central.set(le16(0), 8); // flags
+    central.set(le16(FLAG_UTF8), 8); // flags
     central.set(le16(0), 10); // method
     central.set(le16(0), 12); // mod time
     central.set(le16(0), 14); // mod date

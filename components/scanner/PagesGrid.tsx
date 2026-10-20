@@ -3,7 +3,6 @@
 import { PagePreview } from "./PagePreview";
 import type { ScanPage } from "@/lib/types";
 import { IconButton } from "@/components/ui/icon-button";
-import { cn } from "@/lib/utils";
 import { ChevronDown, ChevronUp, Pencil, RotateCw, Trash2 } from "lucide-react";
 
 export function PagesGrid({
@@ -37,9 +36,14 @@ export function PagesGrid({
                 needs a definite height to resolve against), leaving the grid
                 ragged. The sheet keeps its real paper ratio within the cell, so
                 nothing is cropped whatever size the page is. */}
-            <div className="relative aspect-[3/4] w-full overflow-hidden">
+            <button
+              type="button"
+              onClick={() => onEdit(page.id)}
+              aria-label={`Chỉnh sửa trang ${index + 1}`}
+              className="relative block aspect-[3/4] w-full overflow-hidden rounded-lg focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring"
+            >
               <PagePreview page={page} className="absolute inset-0" />
-            </div>
+            </button>
 
             <div className="flex items-center gap-1">
               <span className="px-1 text-xs tabular-nums text-muted-foreground">
@@ -70,29 +74,26 @@ export function PagesGrid({
               </div>
             </div>
 
-            <div
-              className={cn(
-                "absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex-col gap-1 sm:opacity-0 sm:transition-opacity sm:group-hover:opacity-100",
-                pages.length > 1 && "flex",
-              )}
-            >
-              <IconButton
-                aria-label="Lên"
-                className="h-9 w-9 bg-black/60 text-white hover:bg-black/80"
-                disabled={isFirst}
-                onClick={() => onMove(page.id, -1)}
-              >
-                <ChevronUp className="h-4 w-4" />
-              </IconButton>
-              <IconButton
-                aria-label="Xuống"
-                className="h-9 w-9 bg-black/60 text-white hover:bg-black/80"
-                disabled={isLast}
-                onClick={() => onMove(page.id, 1)}
-              >
-                <ChevronDown className="h-4 w-4" />
-              </IconButton>
-            </div>
+            {pages.length > 1 && (
+              <div className="absolute right-1 top-1 z-20 flex flex-col gap-1 sm:opacity-0 sm:transition-opacity sm:group-focus-within:opacity-100 sm:group-hover:opacity-100">
+                <IconButton
+                  aria-label={`Di chuyển trang ${index + 1} lên`}
+                  className="h-8 w-8 bg-black/55 text-white hover:bg-black/75"
+                  disabled={isFirst}
+                  onClick={() => onMove(page.id, -1)}
+                >
+                  <ChevronUp className="h-4 w-4" />
+                </IconButton>
+                <IconButton
+                  aria-label={`Di chuyển trang ${index + 1} xuống`}
+                  className="h-8 w-8 bg-black/55 text-white hover:bg-black/75"
+                  disabled={isLast}
+                  onClick={() => onMove(page.id, 1)}
+                >
+                  <ChevronDown className="h-4 w-4" />
+                </IconButton>
+              </div>
+            )}
           </div>
         );
       })}

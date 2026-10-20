@@ -1,3 +1,11 @@
+# Which dependencies may run their install scripts. pnpm asks about this on a
+# fresh install and writes this file with "set this to true or false" in place of
+# an answer; those placeholders were committed, so the intent was never recorded.
+#
+# - tesseract.js: postinstall is `opencollective-postinstall || true`, i.e. a
+#   donation banner. Nothing is built, so it can stay off.
+# - unrs-resolver: postinstall picks/links the native binary for this platform.
+#   Needed, and the package is a dev-only dependency of the ESLint resolver.
 allowBuilds:
-  tesseract.js: set this to true or false
-  unrs-resolver: set this to true or false
+  tesseract.js: false
+  unrs-resolver: true

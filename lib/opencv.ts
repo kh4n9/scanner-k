@@ -1,16 +1,18 @@
 "use client";
-// Bundled OpenCV.js via @techstark/opencv-js. The whole OpenCV runtime is now
-// part of the app bundle, so document detection works fully offline — the image
-// and all processing stay on the device (no upload, no CDN dependency).
+// Bundled OpenCV.js via @techstark/opencv-js, loaded on demand (see `getOpenCv`).
+// Document detection works fully offline — the image and all processing stay on
+// the device (no upload, no CDN dependency).
 import type { CV, Mat } from "@techstark/opencv-js";
-import cvModule from "@techstark/opencv-js";
 import { clamp, loadImage } from "./image";
 import { measureEdgeCurves } from "./image-pixels";
 import type { DetectResult } from "./types";
 
-type RuntimeCv = CV & { onRuntimeInitialized?: () => void };
-
 async function getOpenCv(): Promise<CV> {
+  // Imported here rather than at module scope: the OpenCV runtime is ~24 MB of
+  // JS and is reached only through the "Tự dò (CV)" button. A static import put
+  // it in the initial /scan bundle — every visitor downloaded and parsed it
+  // before they could use the scanner at all.
+  const { default: cvModule } = await import("@techstark/opencv-js");
   // The module may be a promise (unresolved wasm) or the ready cv object.
   const cv = ((cvModule instanceof Promise ? await cvModule : cvModule) as CV);
   // OpenCV sets `cv.Mat` before the WASM runtime is callable, so probe a method
@@ -19,12 +21,24 @@ async function getOpenCv(): Promise<CV> {
     cv.getBuildInformation();
     return cv;
   } catch {
-    // not ready yet — wait for the runtime-init hook
+    // Not ready yet — fall through and wait.
   }
-  await new Promise<void>((resolve) => {
-    (cv as RuntimeCv).onRuntimeInitialized = () => resolve();
-  });
-  return cv;
+  // The runtime-init hook can already have fired before this handler was
+  // attached (the import above may resolve after initialisation), and waiting on
+  // it then would park here forever: the button would spin with no error and no
+  // way out. Poll the same probe instead, so readiness is detected either way,
+  // and give up with a real error rather than hanging indefinitely.
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    try {
+      cv.getBuildInformation();
+      return cv;
+    } catch {
+      // still initialising
+    }
+  }
+  throw new Error("OpenCV chưa sẵn sàng — hãy thử lại sau giây lát.");
 }
 
 /** Pick the 4 extreme corners (TL/TR/BR/BL) of a convex point set — no approx needed. */

@@ -1,6 +1,10 @@
 @import "tailwindcss";
 
 :root {
+  /* Tell the UA which scheme these colors belong to, so the widgets it paints
+     itself — range track, select dropdown, number spinners, scrollbars — come
+     out dark instead of glaring white on the dark theme. */
+  color-scheme: dark;
   --background: oklch(0.16 0.022 258);
   --foreground: oklch(0.96 0.008 90);
   --card: oklch(0.205 0.024 258);
@@ -20,6 +24,7 @@
 
 @media (prefers-color-scheme: light) {
   :root {
+    color-scheme: light;
     --background: oklch(0.985 0.005 90);
     --foreground: oklch(0.22 0.025 258);
     --card: oklch(1 0 0);
@@ -73,10 +78,14 @@ body {
   background: color-mix(in oklab, var(--primary) 35%, transparent);
 }
 
-/* Signature: a luminous scan beam sweeping across the frame */
+/* Signature: a luminous scan beam sweeping across the frame.
+   The element itself is a full-size, invisible traveller so `translateY(100%)`
+   equals the height of whatever it is placed in (a 4px-tall element would only
+   ever travel 40px, which is what made the beam look stuck near the top). The
+   visible line is the ::after band, which keeps the glow cheap to paint. */
 @keyframes scan-beam {
   0% {
-    transform: translateY(-100%);
+    transform: translateY(-6px);
     opacity: 0;
   }
   12% {
@@ -86,28 +95,36 @@ body {
     opacity: 1;
   }
   100% {
-    transform: translateY(1000%);
+    transform: translateY(calc(100% + 6px));
     opacity: 0;
   }
 }
 
 .scan-beam {
   position: absolute;
+  inset: 0;
+  z-index: 0;
+  animation: scan-beam 2.8s cubic-bezier(0.45, 0, 0.35, 1) infinite;
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+
+.scan-beam::after {
+  content: "";
+  position: absolute;
   left: 0;
   right: 0;
-  height: 4px;
+  top: 0;
+  height: 2px;
   border-radius: 9999px;
   background: linear-gradient(
     90deg,
     transparent,
-    color-mix(in oklab, var(--primary) 65%, transparent) 30%,
-    color-mix(in oklab, var(--primary) 65%, transparent) 70%,
+    color-mix(in oklab, var(--primary) 60%, transparent) 28%,
+    color-mix(in oklab, var(--primary) 60%, transparent) 72%,
     transparent
   );
-  box-shadow: 0 0 22px 4px color-mix(in oklab, var(--primary) 45%, transparent);
-  animation: scan-beam 2.6s cubic-bezier(0.45, 0, 0.35, 1) infinite;
-  pointer-events: none;
-  will-change: transform;
+  box-shadow: 0 0 12px 1px color-mix(in oklab, var(--primary) 30%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -123,6 +140,16 @@ body {
 .no-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;
+}
+
+/* Keep hit targets above the iOS home indicator / Android gesture bar.
+   Requires `viewportFit: "cover"` (set in app/layout.tsx) to be non-zero. */
+.pb-safe {
+  padding-bottom: max(1rem, env(safe-area-inset-bottom));
+}
+
+.pb-safe-bar {
+  padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
 }
 
 @keyframes sheet-pop {

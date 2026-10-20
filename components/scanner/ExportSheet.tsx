@@ -173,6 +173,7 @@ export function ExportSheet({
               <button
                 key={f.value}
                 type="button"
+                aria-pressed={format === f.value}
                 onClick={() => setFormat(f.value)}
                 className={cn(
                   "rounded-full border border-border px-3 py-2 text-xs font-medium transition-colors",
@@ -194,6 +195,7 @@ export function ExportSheet({
               <button
                 key={v}
                 type="button"
+                aria-pressed={dpi === v}
                 onClick={() => setDpi(v)}
                 className={cn(
                   "rounded-full border border-border px-3 py-2 text-xs font-medium transition-colors",
@@ -258,6 +260,7 @@ export function ExportSheet({
                 value={ocrText}
                 readOnly
                 rows={8}
+                aria-label="Văn bản đã trích xuất"
                 className="w-full resize-y rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
               />
             </div>
