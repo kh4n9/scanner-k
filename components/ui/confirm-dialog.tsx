@@ -5,7 +5,9 @@ import { Sheet } from "./sheet";
 import { Button } from "./button";
 
 /** A small modal used in place of window.confirm(): it inherits the sheet's
- *  focus trap and safe-area padding, and matches the rest of the UI. */
+ *  focus trap and safe-area padding, and matches the rest of the UI. The
+ *  destructive action is the only filled button in the dialog, and it states
+ *  the consequence by naming the thing it deletes. */
 export function ConfirmDialog({
   open,
   title,
@@ -30,9 +32,10 @@ export function ConfirmDialog({
       open={open}
       onClose={onClose}
       title={title}
+      className="sm:max-w-sm"
       footer={
         <div className="flex gap-2">
-          <Button variant="secondary" className="flex-1" onClick={onClose}>
+          <Button variant="outline" className="flex-1" onClick={onClose} autoFocus>
             {cancelLabel}
           </Button>
           <Button
@@ -49,7 +52,9 @@ export function ConfirmDialog({
       }
     >
       {description && (
-        <p className="px-5 py-4 text-sm text-muted-foreground">{description}</p>
+        <p className="px-5 py-4 text-sm leading-relaxed text-muted-foreground">
+          {description}
+        </p>
       )}
     </Sheet>
   );

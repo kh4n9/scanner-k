@@ -1,7 +1,23 @@
 import type { Metadata, Viewport } from "next";
+import { Anek_Latin, JetBrains_Mono } from "next/font/google";
 import { PwaRegister } from "@/app/pwa-register";
 import { siteUrl } from "@/lib/site-url";
 import "./globals.css";
+
+// Anek Latin is Vietnamese-native, which matters because diacritics carry most
+// of this interface's words. JetBrains Mono is only ever used for measurements
+// (page counts, DPI, mm, file sizes) where tabular alignment does real work.
+const anek = Anek_Latin({
+  subsets: ["latin", "vietnamese"],
+  variable: "--font-anek",
+  display: "swap",
+});
+
+const monoData = JetBrains_Mono({
+  subsets: ["latin"],
+  variable: "--font-mono-data",
+  display: "swap",
+});
 
 const title = "Scanner-K — Quét tài liệu thành PDF";
 const description =
@@ -65,9 +81,11 @@ export const viewport: Viewport = {
   // bar can pad itself with env(safe-area-inset-bottom) instead of floating.
   viewportFit: "cover",
   colorScheme: "dark light",
+  // These must match --background in globals.css, otherwise the browser chrome
+  // on iOS paints a different black from the page beneath it.
   themeColor: [
-    { media: "(prefers-color-scheme: dark)", color: "#0b0d10" },
-    { media: "(prefers-color-scheme: light)", color: "#fbfaf7" },
+    { media: "(prefers-color-scheme: dark)", color: "#0b0c0f" },
+    { media: "(prefers-color-scheme: light)", color: "#f7f8f6" },
   ],
 };
 
@@ -75,7 +93,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="vi"
-      className="h-full antialiased"
+      className={`h-full antialiased ${anek.variable} ${monoData.variable}`}
       suppressHydrationWarning
     >
       <body className="min-h-full flex flex-col" suppressHydrationWarning>

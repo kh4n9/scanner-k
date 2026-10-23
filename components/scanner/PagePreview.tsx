@@ -172,14 +172,14 @@ export function PagePreview({
             src={shot}
             alt={`Trang ${page.name}`}
             draggable={false}
-            className="max-h-full max-w-full select-none rounded-lg border border-border bg-white shadow-sm"
+            className="paper-shadow max-h-full max-w-full select-none rounded-[3px] bg-paper"
           />
         ) : (
-          <div className="aspect-[3/4] h-full max-h-full animate-pulse rounded-lg bg-muted" />
+          <div className="aspect-[3/4] h-full max-h-full animate-pulse rounded-[3px] bg-muted" />
         )}
       </div>
       {showLabel && (
-        <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+        <span className="shrink-0 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
           {paperLabel(page.paper)}
         </span>
       )}

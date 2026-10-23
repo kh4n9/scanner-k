@@ -2,17 +2,20 @@
 
 import * as React from "react";
 import { Button } from "@/components/ui/button";
+import { Segmented } from "@/components/ui/segmented";
 import { PAPER_OPTIONS, commonPaper, paperFor } from "@/lib/paper";
 import type { PaperShape, ScanPage } from "@/lib/types";
 
-const MIXED = "__mixed__";
+const MIXED = "__mixed__" as const;
 
 /**
  * Set one paper size across every page.
  *
  * Picking a size only stages it — the user has to press "Áp dụng cho tất cả".
  * Applying on select change would rewrite the whole document on a single stray
- * tap, and there is no undo (the debounced autosave persists immediately).
+ * tap, and there is no undo (the debounced autosave persists immediately). The
+ * staged-but-not-applied state is announced on the button rather than left for
+ * the user to infer.
  */
 export function PaperBulkControl({
   pages,
@@ -31,38 +34,39 @@ export function PaperBulkControl({
   // derived state rather than mirrored in an effect, which would cascade renders.
   const [staged, setStaged] = React.useState<{ from: string; to: string } | null>(null);
   const choice = staged && staged.from === current ? staged.to : current;
+  const dirty = choice !== current && choice !== MIXED;
+
+  const options = PAPER_OPTIONS.map((opt) => ({
+    value: opt.value as string,
+    label: opt.label,
+  }));
+  if (current === MIXED) {
+    options.unshift({ value: MIXED, label: "Hỗn hợp" });
+  }
 
   return (
     <div className={className}>
-      <div className="flex flex-wrap items-center gap-2">
-        <select
-          aria-label="Khổ giấy cho tất cả trang"
-          className="h-9 flex-1 rounded-lg border border-border bg-transparent px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
+        <Segmented
+          label="Khổ giấy cho tất cả trang"
           value={choice}
-          onChange={(e) => setStaged({ from: current, to: e.target.value })}
-        >
-          {shared === null && (
-            <option value={MIXED} disabled>
-              Khổ giấy hỗn hợp
-            </option>
-          )}
-          {PAPER_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
-        <Button
-          variant="secondary"
+          options={options}
+          onChange={(next) => setStaged({ from: current, to: next })}
           size="sm"
-          disabled={choice === current}
+          wrap="wrap"
+          className="sm:flex-1 sm:[&>button]:h-9"
+        />
+        <Button
+          variant={dirty ? "primary" : "outline"}
+          disabled={!dirty}
           onClick={() => onApply(paperFor(choice as PaperShape["kind"], shared))}
+          className="h-9 shrink-0 self-center rounded-full text-xs sm:self-stretch sm:rounded-full"
         >
-          Áp dụng cho tất cả
+          {dirty ? "Áp dụng cho tất cả" : "Đã áp dụng"}
         </Button>
       </div>
-      <p className="mt-2 text-[11px] text-muted-foreground">
-        A4 và Letter cho mọi trang cùng khổ. Tự động thì mỗi trang theo tỉ lệ riêng của nó.
+      <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
+        A4 và Letter in mọi trang cùng khổ. Tự động giữ tỉ lệ riêng của từng trang.
       </p>
     </div>
   );

@@ -3,8 +3,20 @@
 import * as React from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { ArrowLeft, Eye, FilePlus2, Loader2, ScanHeart, ScanSearch, Undo2 } from "lucide-react";
+import {
+  ArrowLeft,
+  Eye,
+  FileDown,
+  FilePlus,
+  FilePlus2,
+  Loader2,
+  Pencil,
+  ScanSearch,
+  Trash2,
+  Undo2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Sheet } from "@/components/ui/sheet";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { AddSourcePad } from "./AddSourcePad";
@@ -444,12 +456,12 @@ export function Scanner() {
   const showDocBar = !restoring && (docs.length > 0 || docId !== null);
 
   return (
-    <div className="mx-auto w-full max-w-4xl px-4 pb-[calc(9.5rem+env(safe-area-inset-bottom))] pt-5 sm:pb-[calc(6.5rem+env(safe-area-inset-bottom))]">
-      <header className="mb-5 flex items-center gap-3">
+    <div className="mx-auto w-full max-w-3xl px-4 pb-[calc(9rem+env(safe-area-inset-bottom))] pt-4 sm:max-w-4xl sm:px-6 sm:pb-[calc(7rem+env(safe-area-inset-bottom))] sm:pt-6">
+      <header className="mb-5 flex items-center gap-2">
         <Link
           href="/"
           aria-label="Về trang chủ"
-          className="inline-flex h-10 w-10 items-center justify-center rounded-full transition-colors hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring"
+          className="-ml-2 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring"
         >
           <ArrowLeft className="h-5 w-5" />
         </Link>
@@ -471,29 +483,39 @@ export function Scanner() {
                   setRenaming(false);
                 }
               }}
-              className="h-9 w-full rounded-lg border border-border bg-transparent px-2 text-lg font-semibold focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-9 w-full rounded-lg border border-border bg-muted px-2 text-lg font-semibold focus:outline-none focus:ring-2 focus:ring-ring"
             />
           ) : (
-            <h1 className="truncate text-lg font-semibold leading-tight">
+            <h1 className="truncate text-lg font-semibold leading-tight tracking-tight sm:text-xl">
               {docName}
             </h1>
           )}
-          <p className="text-xs text-muted-foreground">
-            {pages.length === 0
-              ? "Chưa có trang"
-              : `${pages.length} trang sẽ được gộp thành PDF`}
+          <p className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+            {pages.length === 0 ? (
+              "Chưa có trang nào"
+            ) : (
+              <>
+                <span className="font-mono tabular-nums">{pages.length}</span>
+                <span>trang sẽ được gộp thành PDF</span>
+              </>
+            )}
           </p>
         </div>
+        {!renaming && (
+          <IconButton aria-label="Đổi tên tài liệu" onClick={startRename}>
+            <Pencil className="h-4 w-4" />
+          </IconButton>
+        )}
       </header>
 
       {showDocBar && (
-        <div className="mb-5 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card p-2">
+        <div className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card p-2">
           <label className="sr-only" htmlFor="doc-select">
             Chọn tài liệu
           </label>
           <select
             id="doc-select"
-            className="h-9 flex-1 rounded-lg border border-border bg-transparent px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-9 min-w-0 flex-1 rounded-lg border border-border bg-muted px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             value={docId ?? ""}
             onChange={(e) => switchDoc(e.target.value)}
           >
@@ -504,30 +526,32 @@ export function Scanner() {
               </option>
             ))}
           </select>
-          <Button variant="secondary" size="sm" onClick={newDoc}>
-            Mới
-          </Button>
-          <Button variant="secondary" size="sm" onClick={startRename}>
-            Đổi tên
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => setConfirmDeleteDoc(true)}
-            disabled={!docId}
-          >
-            Xóa
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button variant="outline" size="sm" onClick={newDoc}>
+              <FilePlus className="h-3.5 w-3.5" aria-hidden="true" />
+              Tài liệu mới
+            </Button>
+            <IconButton
+              aria-label="Xóa tài liệu này"
+              tone="danger"
+              className="h-8 w-8"
+              onClick={() => setConfirmDeleteDoc(true)}
+              disabled={!docId}
+            >
+              <Trash2 className="h-4 w-4" />
+            </IconButton>
+          </div>
         </div>
       )}
 
       {!restoring && pages.length > 0 && (
-        <div className="mb-5 rounded-xl border border-border bg-card p-2">
+        <div className="mb-4 rounded-xl border border-border bg-card p-3">
           <PaperBulkControl pages={pages} onApply={applyPaperToAll} />
-          <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
+          <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-border pt-3">
             <Button
-              variant="secondary"
+              variant="ghost"
               size="sm"
+              className="px-2"
               onClick={redetectAll}
               disabled={redetecting}
             >
@@ -536,32 +560,31 @@ export function Scanner() {
               ) : (
                 <ScanSearch className="h-4 w-4" />
               )}
-              Dò lại viền tất cả trang
+              Dò lại mép giấy
             </Button>
             <span className="text-[11px] text-muted-foreground">
-              Đo lại mép giấy cong cho các trang đã thêm.
+              Đo lại mép giấy cong cho những trang đã thêm từ trước.
             </span>
           </div>
         </div>
       )}
 
       {restoring ? (
-        <p className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
+        <p className="flex items-center justify-center gap-2 py-24 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" /> Đang mở tài liệu…
         </p>
       ) : pages.length === 0 ? (
-        <section className="relative overflow-hidden rounded-2xl border border-border bg-card px-6 py-14 text-center">
-          <div className="scan-beam" aria-hidden="true" />
-          <div className="relative z-10">
-            <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/15 text-primary">
-              <ScanHeart className="h-7 w-7" aria-hidden="true" />
-            </div>
-            <h2 className="text-xl font-semibold">Quét tài liệu thành PDF</h2>
-            <p className="mx-auto mt-2 max-w-sm text-sm text-muted-foreground">
-              Chụp hoặc tải ảnh các trang giấy, chỉnh cắt và gộp thành một file
-              PDF ngay trên thiết bị của bạn.
+        <section className="bed relative overflow-hidden rounded-2xl border border-border">
+          <div className="sweep" aria-hidden="true" />
+          <div className="relative z-10 flex flex-col items-center px-5 py-14 text-center sm:py-16">
+            <h2 className="text-2xl font-semibold tracking-tight">
+              Bắt đầu bằng một trang
+            </h2>
+            <p className="mx-auto mt-2.5 max-w-sm text-sm leading-relaxed text-muted-foreground">
+              Chụp thẳng trang giấy hoặc chọn ảnh có sẵn. Ảnh được xử lý ngay
+              trên thiết bị — không tải lên máy chủ.
             </p>
-            <div className="mx-auto mt-6 max-w-md">
+            <div className="mt-7 w-full max-w-sm">
               <AddSourcePad
                 onFiles={addFiles}
                 onCamera={() => {
@@ -606,14 +629,14 @@ export function Scanner() {
         <div
           role="status"
           aria-live="polite"
-          className="pointer-events-none fixed inset-x-0 bottom-[calc(9rem+env(safe-area-inset-bottom))] z-40 flex justify-center px-4 sm:bottom-[calc(5.5rem+env(safe-area-inset-bottom))]"
+          className="pointer-events-none fixed inset-x-0 bottom-[calc(6rem+env(safe-area-inset-bottom))] z-40 flex justify-center px-4 sm:bottom-[calc(6.5rem+env(safe-area-inset-bottom))]"
         >
-          <div className="pointer-events-auto fade-in flex items-center gap-3 rounded-full border border-border bg-card px-4 py-2 text-sm shadow-lg">
+          <div className="pointer-events-auto fade-in flex items-center gap-3 rounded-full border border-border bg-card px-4 py-2 text-sm shadow-xl">
             <span>Đã xóa 1 trang</span>
             <button
               type="button"
               onClick={undoDelete}
-              className="inline-flex items-center gap-1 rounded-full px-2 py-1 font-medium text-primary transition-colors hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring"
+              className="inline-flex items-center gap-1 rounded-full px-2 py-1 font-semibold text-primary transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring"
             >
               <Undo2 className="h-4 w-4" aria-hidden="true" />
               Hoàn tác
@@ -622,34 +645,50 @@ export function Scanner() {
         </div>
       )}
 
-      <div className="pb-safe-bar fixed inset-x-0 bottom-0 z-30 border-t border-border bg-background/90 px-3 pt-3 backdrop-blur">
-        <div className="mx-auto grid max-w-4xl grid-cols-2 gap-2 sm:flex">
+      {/* One bar, three actions, and it has to fit a 320px-wide phone without
+          clipping: at sm and below the two secondary actions drop to their
+          icons (the labels move into aria-label, nothing is lost to a screen
+          reader) and the commit button keeps enough width to read. Measured at
+          320/360/372/390/414 px; the bar used to need 441px inside a 348px box
+          and simply had its right edge cut off. */}
+      <div className="pb-safe-bar fixed inset-x-0 bottom-0 z-30 border-t border-border bg-background/85 px-3 pt-3 backdrop-blur-md">
+        <div className="mx-auto flex max-w-4xl items-stretch gap-2">
           <Button
-            variant="secondary"
-            size="lg"
-            className="sm:flex-1"
+            variant="outline"
+            className="px-3 sm:px-4"
+            aria-label="Thêm trang"
             onClick={() => setShowAdd(true)}
           >
-            <FilePlus2 className="h-5 w-5" aria-hidden="true" />
-            Thêm trang
+            <FilePlus2 className="h-4 w-4" aria-hidden="true" />
+            <span className="hidden sm:inline">Thêm trang</span>
           </Button>
           <Button
-            variant="secondary"
-            size="lg"
-            className="sm:flex-1"
+            variant="ghost"
+            className="px-3 sm:px-4"
+            aria-label="Xem trước tài liệu"
             disabled={pages.length === 0}
             onClick={() => setShowPreview(true)}
           >
-            <Eye className="h-5 w-5" aria-hidden="true" />
-            Xem trước
+            <Eye className="h-4 w-4" aria-hidden="true" />
+            <span className="hidden sm:inline">Xem trước</span>
           </Button>
           <Button
-            size="lg"
-            className="col-span-2 sm:col-span-1 sm:flex-1"
+            className="ml-auto min-w-0 flex-1 px-4 sm:flex-none"
             disabled={pages.length === 0}
             onClick={() => setShowExport(true)}
           >
-            {pages.length > 0 ? `Xuất PDF (${pages.length})` : "Xuất PDF"}
+            <FileDown className="h-4 w-4" aria-hidden="true" />
+            {pages.length > 0 ? (
+              <>
+                <span className="sm:hidden">Xuất PDF</span>
+                <span className="hidden sm:inline">Xuất PDF · {pages.length} trang</span>
+                <span className="font-mono text-xs tabular-nums opacity-70 sm:hidden">
+                  {pages.length}
+                </span>
+              </>
+            ) : (
+              "Xuất PDF"
+            )}
           </Button>
         </div>
       </div>
@@ -658,9 +697,10 @@ export function Scanner() {
         open={showAdd}
         onClose={() => setShowAdd(false)}
         title="Thêm trang"
+        description="Mỗi ảnh là một trang trong tài liệu."
         footer={
           adding ? (
-            <p className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+            <p className="flex items-center justify-center gap-2 py-2 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" /> Đang xử lý…
             </p>
           ) : null

@@ -1,44 +1,81 @@
 @import "tailwindcss";
 
+/*
+ * Scanner-K design tokens.
+ *
+ * The palette is measured from the machine the app replaces: a scanner bed is
+ * dark and neutral, its only light is the lamp, and the one thing that is
+ * allowed to be pure white is the paper it produces. Every surface below is a
+ * neutral ink step (no blue cast), and `--primary` is the phosphor accent
+ * (bichromate) that stands in for the lamp. Paper white is NOT a theme color —
+ * it lives in `--paper` and is used only by scanned content, so the chrome can
+ * never be mistaken for a page.
+ *
+ * Dark is the design, not a preference: a document lit on a dark bed. Light is
+ * a true inverse of the same values, kept so the app still works on a bright
+ * desk in daylight.
+ */
 :root {
   /* Tell the UA which scheme these colors belong to, so the widgets it paints
      itself — range track, select dropdown, number spinners, scrollbars — come
      out dark instead of glaring white on the dark theme. */
   color-scheme: dark;
-  --background: oklch(0.16 0.022 258);
-  --foreground: oklch(0.96 0.008 90);
-  --card: oklch(0.205 0.024 258);
-  --card-foreground: oklch(0.96 0.008 90);
-  --primary: oklch(0.78 0.12 230);
-  --primary-foreground: oklch(0.15 0.03 240);
-  --muted: oklch(0.245 0.024 258);
-  --muted-foreground: oklch(0.66 0.02 250);
-  --accent: oklch(0.28 0.03 245);
-  --accent-foreground: oklch(0.96 0.008 90);
-  --border: oklch(0.295 0.028 258);
-  --ring: oklch(0.78 0.12 230);
-  --destructive: oklch(0.62 0.19 25);
-  --destructive-foreground: oklch(0.98 0.015 25);
+
+  /* Ink scale: bed → panel → raised → rule. */
+  --background: #0b0c0f;
+  --foreground: #edeff4;
+  --card: #14161b;
+  --card-foreground: #edeff4;
+  --muted: #1f2229;
+  --muted-foreground: #8a909e;
+  --accent: #1f2229;
+  --accent-foreground: #edeff4;
+  --border: #262a32;
+  --border-strong: #363b46;
+
+  /* Phosphor: the scan lamp. Ink text on top, because a pale accent with white
+     text is unreadable; this pairing stays above 4.5:1 at every size we use. */
+  --primary: #c7f751;
+  --primary-foreground: #10130a;
+  --ring: #c7f751;
+
+  --destructive: #f0665c;
+  --destructive-foreground: #170a09;
+  --success: #7ee0a8;
+
+  /* Paper — scanned content only. */
+  --paper: #ffffff;
+  --paper-edge: #d7d9de;
+
   --radius: 0.75rem;
 }
 
 @media (prefers-color-scheme: light) {
   :root {
     color-scheme: light;
-    --background: oklch(0.985 0.005 90);
-    --foreground: oklch(0.22 0.025 258);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.22 0.025 258);
-    --primary: oklch(0.5 0.14 235);
-    --primary-foreground: oklch(0.985 0.005 90);
-    --muted: oklch(0.945 0.008 250);
-    --muted-foreground: oklch(0.46 0.025 258);
-    --accent: oklch(0.92 0.02 240);
-    --accent-foreground: oklch(0.22 0.025 258);
-    --border: oklch(0.88 0.01 250);
-    --ring: oklch(0.5 0.14 235);
-    --destructive: oklch(0.55 0.19 25);
-    --destructive-foreground: oklch(0.985 0.005 90);
+    --background: #f7f8f6;
+    --foreground: #15171b;
+    --card: #ffffff;
+    --card-foreground: #15171b;
+    --muted: #eef0ed;
+    --muted-foreground: #5c6270;
+    --accent: #eef0ed;
+    --accent-foreground: #15171b;
+    --border: #dfe2de;
+    --border-strong: #c4c8c2;
+
+    /* The same lamp, read on paper: the accent darkens so lime keeps its
+       contrast against white, and its foreground flips to near-white. */
+    --primary: #3f6f00;
+    --primary-foreground: #f6ffe8;
+    --ring: #4d8700;
+
+    --destructive: #c2392f;
+    --destructive-foreground: #fff5f4;
+    --success: #1d7a48;
+
+    --paper: #ffffff;
+    --paper-edge: #dcdedb;
   }
 }
 
@@ -54,17 +91,28 @@
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
   --color-ring: var(--ring);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
-  --radius-sm: calc(var(--radius) - 2px);
-  --radius-md: calc(var(--radius) - 0px);
-  --radius-lg: calc(var(--radius) + 4px);
-  --radius-xl: calc(var(--radius) + 8px);
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    Helvetica, Arial, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas,
-    monospace;
+  --color-success: var(--success);
+  --color-paper: var(--paper);
+  --color-paper-edge: var(--paper-edge);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* Anek Latin is one of the few variable faces drawn for Vietnamese, so the
+     diacritics that dominate this interface are the font's primary design
+     rather than a fallback glyph set bolted onto a Latin face. */
+  --font-sans: var(--font-anek), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  /* Measurements — page numbers, DPI, mm, file sizes — are data, and get the
+     monospace treatment so they line up in columns as they change. */
+  --font-mono: var(--font-mono-data), ui-monospace, "SF Mono", "Cascadia Code",
+    Menlo, Consolas, monospace;
 }
 
 body {
@@ -72,44 +120,60 @@ body {
   color: var(--foreground);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  /* The bed is darker at the edges, like a real scanner's housing; the content
+     sits in the middle where the lamp is. */
+  background-image: radial-gradient(
+    120% 80% at 50% 0%,
+    color-mix(in oklab, var(--foreground) 4%, transparent),
+    transparent 60%
+  );
+  background-repeat: no-repeat;
 }
 
 ::selection {
-  background: color-mix(in oklab, var(--primary) 35%, transparent);
+  background: color-mix(in oklab, var(--primary) 40%, transparent);
+  color: var(--foreground);
 }
 
-/* Signature: a luminous scan beam sweeping across the frame.
-   The element itself is a full-size, invisible traveller so `translateY(100%)`
-   equals the height of whatever it is placed in (a 4px-tall element would only
-   ever travel 40px, which is what made the beam look stuck near the top). The
-   visible line is the ::after band, which keeps the glow cheap to paint. */
-@keyframes scan-beam {
+/*
+ * The scan sweep — the app's one memorable element.
+ *
+ * It stands for the lamp moving under the glass, so it is used exactly once per
+ * screen, always over a `--bed` (the dark plate scanned content sits on) and
+ * always at z-index 0 with content above it — that is how it stops crossing the
+ * text it used to slice through.
+ *
+ * The traveller is a full-size invisible element so `translateY(100%)` is the
+ * height of its container; the visible light is the ::after band, which keeps
+ * the glow cheap to paint.
+ */
+@keyframes scan-sweep {
   0% {
-    transform: translateY(-6px);
+    transform: translateY(-2px);
     opacity: 0;
   }
-  12% {
+  10% {
     opacity: 1;
   }
-  85% {
+  82% {
     opacity: 1;
   }
   100% {
-    transform: translateY(calc(100% + 6px));
+    transform: translateY(calc(100% + 2px));
     opacity: 0;
   }
 }
 
-.scan-beam {
+.sweep {
   position: absolute;
   inset: 0;
   z-index: 0;
-  animation: scan-beam 2.8s cubic-bezier(0.45, 0, 0.35, 1) infinite;
+  animation: scan-sweep 3.2s cubic-bezier(0.45, 0, 0.35, 1) infinite;
   pointer-events: none;
   will-change: transform, opacity;
 }
 
-.scan-beam::after {
+.sweep::after {
   content: "";
   position: absolute;
   left: 0;
@@ -120,20 +184,43 @@ body {
   background: linear-gradient(
     90deg,
     transparent,
-    color-mix(in oklab, var(--primary) 60%, transparent) 28%,
-    color-mix(in oklab, var(--primary) 60%, transparent) 72%,
+    color-mix(in oklab, var(--primary) 85%, transparent) 22%,
+    var(--primary) 50%,
+    color-mix(in oklab, var(--primary) 85%, transparent) 78%,
     transparent
   );
-  box-shadow: 0 0 12px 1px color-mix(in oklab, var(--primary) 30%, transparent);
+  box-shadow:
+    0 0 10px 0 color-mix(in oklab, var(--primary) 55%, transparent),
+    0 0 34px 2px color-mix(in oklab, var(--primary) 18%, transparent);
+}
+
+/* The plate scanned content sits on: darker than any panel, so a white page
+   reads as paper rather than as a seam in the chrome. */
+.bed {
+  background: #050608;
+}
+@media (prefers-color-scheme: light) {
+  .bed {
+    background: #292c31;
+  }
+}
+
+/* Paper edge: the faint lip of a real sheet, on a dark surround. */
+.paper-shadow {
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.4),
+    0 8px 24px -8px rgba(0, 0, 0, 0.55);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .scan-beam {
+  .sweep {
     animation: none;
     opacity: 0;
   }
 }
 
+/* Horizontal scrollers (the chip family on narrow screens) without a visible
+   track. */
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
@@ -148,14 +235,10 @@ body {
   padding-bottom: max(1rem, env(safe-area-inset-bottom));
 }
 
-.pb-safe-bar {
-  padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
-}
-
-@keyframes sheet-pop {
+@keyframes sheet-rise {
   from {
     opacity: 0;
-    transform: translateY(14px);
+    transform: translateY(16px);
   }
   to {
     opacity: 1;
@@ -163,8 +246,8 @@ body {
   }
 }
 
-.sheet-pop {
-  animation: sheet-pop 0.22s ease-out;
+.sheet-rise {
+  animation: sheet-rise 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 @keyframes fade-in {
@@ -181,7 +264,7 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .sheet-pop,
+  .sheet-rise,
   .fade-in {
     animation: none;
   }

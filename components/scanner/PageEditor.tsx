@@ -4,7 +4,20 @@ import * as React from "react";
 import { Sheet } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
-import { Loader2, Plus, RotateCcw, RotateCw, ScanSearch, Trash2, Wand2 } from "lucide-react";
+import { Segmented } from "@/components/ui/segmented";
+import { Switch } from "@/components/ui/switch";
+import { Range } from "@/components/ui/range";
+import {
+  AlignVerticalJustifyCenter,
+  Check,
+  Loader2,
+  Plus,
+  RotateCcw,
+  RotateCw,
+  ScanSearch,
+  Trash2,
+  Wand2,
+} from "lucide-react";
 import {
   clamp,
   computeAutoAdjust,
@@ -32,6 +45,9 @@ const FILTERS: { value: FilterMode; label: string }[] = [
   { value: "grayscale", label: "Xám" },
   { value: "bw", label: "Đen trắng" },
 ];
+
+/** Measured edge bow, written the way the scale in an instrument would be. */
+const fmtPct = (v: number) => `${(v * 100).toFixed(1)}%`;
 
 const PRESET_ADJUST: Record<"original" | "color", Adjust> = {
   original: NEUTRAL_ADJUST,
@@ -389,7 +405,12 @@ export function PageEditor({
     <Sheet
       open={open}
       onClose={onClose}
-      title="Chỉnh vùng phiếu"
+      title="Chỉnh trang"
+      description="Kéo các điểm để bám đúng mép giấy, rồi chọn kiểu nâng cao."
+      className="sm:max-w-2xl"
+      // Cap the sheet on desktop so the crop surface and the first controls are
+      // both on screen at once, instead of the photo filling the viewport.
+      bodyClassName="sm:max-h-[calc(92dvh-6rem)]"
       footer={
         <Button
           size="lg"
@@ -410,14 +431,18 @@ export function PageEditor({
             })
           }
         >
+          <Check className="h-4 w-4" aria-hidden="true" />
           Áp dụng
         </Button>
       }
     >
-      <div className="flex flex-col gap-3 p-3">
+      <div className="flex flex-col gap-4 p-4">
+        {/* The crop surface is the scanner bed: the photo sits on black, and
+            everything outside the boundary is dimmed so the page is the only
+            lit thing on screen. */}
         <div
           ref={containerRef}
-          className="relative h-[46dvh] w-full touch-none overflow-hidden rounded-xl bg-black"
+          className="bed relative h-[44dvh] min-h-64 w-full touch-none overflow-hidden rounded-xl border border-border sm:h-[34dvh]"
         >
           {nat && box && boundary.length >= 4 && (
             <>
@@ -527,283 +552,252 @@ export function PageEditor({
           )}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant="secondary" size="sm" onClick={autoDetectBoundary} disabled={detectBusy}>
-            {detectBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ScanSearch className="h-4 w-4" />}
-            Tự dò lại
-          </Button>
-          <Button variant="secondary" size="sm" onClick={autoDetectBoundaryCv} disabled={cvBusy}>
-            {cvBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ScanSearch className="h-4 w-4" />}
-            Tự dò (CV)
-          </Button>
-          {cvError && (
-            <span className="text-xs text-destructive">{cvError}</span>
-          )}
-          <IconButton aria-label="Đặt lại" className="h-8 w-8" onClick={() => {
-            setBoundary([
-              { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 },
-            ]);
-            // The reset drops any extra points, so an index past the new end
-            // would stay selected and leave "Xóa điểm" enabled with nothing to
-            // delete.
-            setSelected(null);
-          }}>
-            <RotateCcw className="h-4 w-4" />
-          </IconButton>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={removeSelected}
-            disabled={selected === null || boundary.length <= 4}
-          >
-            <Trash2 className="h-4 w-4" />
-            Xóa điểm
-          </Button>
-          <IconButton aria-label="Xoay 90°" className="h-8 w-8" onClick={rotate90}>
-            <RotateCw className="h-4 w-4" />
-          </IconButton>
-          <Button variant="secondary" size="sm" onClick={autoRotate}>
-            Đứng thẳng
-          </Button>
-          <span className="ml-auto text-xs text-muted-foreground">
-            Chạm + để thêm điểm · kéo điểm để bám mép giấy
-          </span>
+        <div className="rounded-xl border border-border bg-card">
+          <div className="flex items-center gap-1 px-1 py-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="px-2.5"
+              onClick={autoDetectBoundary}
+              disabled={detectBusy}
+            >
+              {detectBusy ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <ScanSearch className="h-4 w-4" />
+              )}
+              Dò mép
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="px-2.5"
+              onClick={autoDetectBoundaryCv}
+              disabled={cvBusy}
+              title="Dò mép bằng OpenCV — chính xác hơn với ảnh thiếu sáng"
+            >
+              {cvBusy ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <ScanSearch className="h-4 w-4" />
+              )}
+              Dò mép CV
+            </Button>
+            <span className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
+            <IconButton
+              aria-label="Xoay trang 90 độ"
+              className="h-8 w-8"
+              onClick={rotate90}
+            >
+              <RotateCw className="h-4 w-4" />
+            </IconButton>
+            <Button variant="ghost" size="sm" className="px-2.5" onClick={autoRotate}>
+              <AlignVerticalJustifyCenter className="h-4 w-4" />
+              Đứng thẳng
+            </Button>
+            <IconButton
+              aria-label="Đặt lại vùng cắt"
+              className="ml-auto h-8 w-8"
+              onClick={() => {
+                setBoundary([
+                  { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 },
+                ]);
+                // The reset drops any extra points, so an index past the new end
+                // would stay selected and leave "Xóa điểm" enabled with nothing to
+                // delete.
+                setSelected(null);
+              }}
+            >
+              <RotateCcw className="h-4 w-4" />
+            </IconButton>
+            <IconButton
+              aria-label="Xóa điểm đang chọn"
+              tone="danger"
+              className="h-8 w-8"
+              onClick={removeSelected}
+              disabled={selected === null || boundary.length <= 4}
+            >
+              <Trash2 className="h-4 w-4" />
+            </IconButton>
+          </div>
+          <p className="border-t border-border px-3 py-2 text-[11px] leading-snug text-muted-foreground">
+            {cvError ? (
+              <span className="text-destructive">{cvError}</span>
+            ) : (
+              "Chạm dấu + để thêm điểm giữa hai góc · kéo điểm để bám mép giấy."
+            )}
+          </p>
         </div>
 
-        {/* Paper preview. The sheet keeps its real ratio for the paper that is
-            selected, so switching A4 / Letter / custom visibly reshapes it. */}
-        <div className="rounded-xl border border-border bg-card p-3">
-          <p className="mb-2 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+        {/* Paper preview — the page as it will print, on the bed. It needs a
+            definite height: given only `h-auto` inside a column, the sheet
+            stretches to the row and loses its paper shape. */}
+        <section className="rounded-xl border border-border bg-card p-3">
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Xem trước tờ giấy
-          </p>
-          <div className="h-[34dvh] w-full">
+          </h3>
+          <div className="bed h-56 w-full rounded-lg p-3 sm:h-64">
             <PagePreview page={draft} maxDim={640} debounceMs={120} />
           </div>
           <p className="mt-2 text-[11px] text-muted-foreground">
             Sau khi nắn thẳng và kéo dãn theo khổ giấy đã chọn.
           </p>
-        </div>
+        </section>
 
-        <div>
-          <p className="mb-2 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+        <section>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Kích thước giấy
-          </p>
-          <div className="grid grid-cols-4 gap-2">
-            {PAPER_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                type="button"
-                onClick={() => setPaper(paperFor(opt.value, paper))}
-                className={cn(
-                  "rounded-full border border-border px-2 py-2 text-xs font-medium transition-colors",
-                  paper.kind === opt.value
-                    ? "bg-primary text-primary-foreground border-transparent"
-                    : "hover:bg-accent/60",
-                )}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
+          </h3>
+          <Segmented
+            label="Kích thước giấy"
+            value={paper.kind}
+            options={PAPER_OPTIONS.map((opt) => ({
+              value: opt.value,
+              label: opt.label,
+            }))}
+            onChange={(kind) => setPaper(paperFor(kind, paper))}
+          />
           {paper.kind === "custom" && (
             <div className="mt-2 flex items-center gap-2">
+              <label className="sr-only" htmlFor="paper-w">
+                Chiều rộng (mm)
+              </label>
               <input
+                id="paper-w"
                 type="number"
                 min={40}
                 max={600}
                 value={paper.widthMm}
                 onChange={(e) => setCustomPaper(Number(e.target.value), paper.heightMm)}
-                className="w-24 rounded-lg border border-border bg-transparent px-2 py-2 text-sm"
-                aria-label="Chiều rộng mm"
+                className="h-9 w-24 rounded-lg border border-border bg-muted px-2 font-mono text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-ring"
               />
               <span className="text-xs text-muted-foreground">×</span>
+              <label className="sr-only" htmlFor="paper-h">
+                Chiều cao (mm)
+              </label>
               <input
+                id="paper-h"
                 type="number"
                 min={40}
                 max={1000}
                 value={paper.heightMm}
                 onChange={(e) => setCustomPaper(paper.widthMm, Number(e.target.value))}
-                className="w-24 rounded-lg border border-border bg-transparent px-2 py-2 text-sm"
-                aria-label="Chiều cao mm"
+                className="h-9 w-24 rounded-lg border border-border bg-muted px-2 font-mono text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-ring"
               />
               <span className="text-xs text-muted-foreground">mm</span>
             </div>
           )}
           <Button
-            variant="secondary"
+            variant="outline"
             size="sm"
             className="mt-2"
             onClick={() => onApplyToAll(paper)}
           >
             Áp dụng cho tất cả trang
           </Button>
-          <p className="mt-2 text-[11px] text-muted-foreground">
-            A4 và Letter cho mọi trang cùng khổ. Tự động thì mỗi trang theo tỉ lệ riêng.
-          </p>
-        </div>
+        </section>
 
-        <div>
-          <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-            Màu sắc
-            <Button variant="secondary" size="sm" className="ml-auto" onClick={autoColor} disabled={autoBusy}>
-              {autoBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />}
-              Tự động
+        <section>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Màu sắc
+            </h3>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="px-2"
+              onClick={autoColor}
+              disabled={autoBusy}
+            >
+              {autoBusy ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Wand2 className="h-3.5 w-3.5" />
+              )}
+              Cân bằng tự động
             </Button>
-          </p>
-          <div className="grid grid-cols-4 gap-2">
-            {FILTERS.map((f) => (
-              <button
-                key={f.value}
-                type="button"
-                onClick={() => applyPreset(f.value)}
-                className={cn(
-                  "rounded-full border border-border px-3 py-2 text-xs font-medium transition-colors",
-                  filter === f.value
-                    ? "bg-primary text-primary-foreground border-transparent"
-                    : "hover:bg-accent/60",
-                )}
-              >
-                {f.label}
-              </button>
-            ))}
           </div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => setShadow((v) => !v)}
-              className={cn(
-                "flex items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs font-medium transition-colors",
-                shadow ? "bg-primary text-primary-foreground border-transparent" : "hover:bg-accent/60",
-              )}
-            >
-              <span
-                className={cn(
-                  "flex h-3.5 w-3.5 items-center justify-center rounded border border-current text-[9px]",
-                  shadow && "bg-transparent",
-                )}
-              >
-                {shadow ? "✓" : ""}
-              </span>
-              Khử bóng / nền trắng
-            </button>
-            <button
-              type="button"
-              onClick={() => setSharpen((v) => !v)}
-              className={cn(
-                "flex items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs font-medium transition-colors",
-                sharpen ? "bg-primary text-primary-foreground border-transparent" : "hover:bg-accent/60",
-              )}
-            >
-              <span
-                className={cn(
-                  "flex h-3.5 w-3.5 items-center justify-center rounded border border-current text-[9px]",
-                  sharpen && "bg-transparent",
-                )}
-              >
-                {sharpen ? "✓" : ""}
-              </span>
-              Tăng độ sắc nét
-            </button>
-            <button
-              type="button"
-              onClick={() => setCurvesEnabled((v) => !v)}
-              disabled={!hasCurves}
-              title={hasCurves ? undefined : "Chưa đo được mép cong — bấm “Tự dò lại”."}
-              className={cn(
-                "flex items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs font-medium transition-colors",
-                hasCurves && curvesEnabled
-                  ? "bg-primary text-primary-foreground border-transparent"
-                  : "hover:bg-accent/60",
-                !hasCurves && "cursor-not-allowed opacity-50 hover:bg-transparent",
-              )}
-            >
-              <span className="flex h-3.5 w-3.5 items-center justify-center rounded border border-current text-[9px]">
-                {hasCurves && curvesEnabled ? "✓" : ""}
-              </span>
-              Uốn thẳng mép cong
-            </button>
-          </div>
-          {boundary.length > 4 ? (
-            <p className="mt-2 text-[11px] text-muted-foreground">
-              Đang uốn theo các điểm bạn thêm trên viền.
-            </p>
-          ) : (
-            <p className="mt-2 text-[11px] text-muted-foreground">
-              {hasCurves
-                ? `Độ cong đo được — trên ${(curves[0] * 100).toFixed(1)}% · phải ${(
-                    curves[1] * 100
-                  ).toFixed(1)}% · dưới ${(curves[2] * 100).toFixed(1)}% · trái ${(
-                    curves[3] * 100
-                  ).toFixed(1)}% (đường nét đứt)`
-                : "Chưa đo được mép cong nào — nếu mép giấy bị cong, bấm “Tự dò lại”."}
-            </p>
-          )}
-          {sharpen && (
-            <div className="mt-3">
-              <div className="mb-1 flex justify-between text-xs">
-                <span>Độ sắc nét</span>
-                <span className="tabular-nums text-muted-foreground">
-                  {Math.round(sharpenStrength * 100)}%
-                </span>
+          <Segmented
+            label="Kiểu màu"
+            value={filter}
+            options={FILTERS}
+            onChange={applyPreset}
+          />
+
+          <div className="mt-3 flex flex-col gap-2">
+            <Switch
+              label="Khử bóng và nền trắng"
+              hint="Làm phẳng ánh sáng lệch, giữ nền giấy trắng đều."
+              checked={shadow}
+              onChange={setShadow}
+            />
+            <Switch
+              label="Tăng độ sắc nét"
+              hint="Làm rõ nét chữ nhỏ và mảnh."
+              checked={sharpen}
+              onChange={setSharpen}
+            />
+            {sharpen && (
+              <div className="rounded-xl border border-border bg-muted/40 px-3 py-2.5">
+                <Range
+                  label="Độ sắc nét"
+                  value={sharpenStrength}
+                  min={0.5}
+                  max={2.5}
+                  step={0.05}
+                  onChange={setSharpenStrength}
+                  format={(v) => `${Math.round(v * 100)}%`}
+                  lowLabel="Dịu"
+                  highLabel="Gắt"
+                  hint="Quá cao sẽ nổi hạt nhiễu trên nền giấy."
+                />
               </div>
-              <input
-                type="range"
-                min={0.5}
-                max={2.5}
-                step={0.05}
-                value={sharpenStrength}
-                onChange={(e) => setSharpenStrength(Number(e.target.value))}
-                className="w-full accent-primary"
-                aria-label="Độ sắc nét"
-              />
-              <p className="mt-1 text-[11px] text-muted-foreground">
-                Kéo lên cho nét chữ rõ hơn; quá cao sẽ nổi hạt nhiễu trên nền giấy.
-              </p>
-            </div>
-          )}
-          <div className="mt-3">
-            <button
-              type="button"
-              onClick={() => setDewarpStrength((v) => (v === 0 ? 0.5 : 0))}
-              className={cn(
-                "flex items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs font-medium transition-colors",
-                dewarpStrength !== 0
-                  ? "bg-primary text-primary-foreground border-transparent"
-                  : "hover:bg-accent/60",
-              )}
-            >
-              <span
-                className={cn(
-                  "flex h-3.5 w-3.5 items-center justify-center rounded border border-current text-[9px]",
-                  dewarpStrength !== 0 && "bg-transparent",
-                )}
-              >
-                {dewarpStrength !== 0 ? "✓" : ""}
-              </span>
-              Làm phẳng trang cong
-            </button>
+            )}
+            <Switch
+              label="Uốn thẳng mép cong"
+              hint={
+                boundary.length > 4
+                  ? "Đang uốn theo các điểm bạn thêm trên viền."
+                  : hasCurves
+                    ? "Bù độ cong đo được của mép giấy."
+                    : undefined
+              }
+              checked={hasCurves && curvesEnabled}
+              onChange={setCurvesEnabled}
+              disabled={!hasCurves}
+              disabledHint="Chưa đo được mép cong — bấm “Dò mép”."
+            />
+            <Switch
+              label="Làm phẳng trang cong"
+              hint="Thử nghiệm: điều chỉnh theo độ cong của trang khi chụp."
+              checked={dewarpStrength !== 0}
+              onChange={(on) => setDewarpStrength(on ? 0.5 : 0)}
+            />
             {dewarpStrength !== 0 && (
-              <div className="mt-2">
-                <div className="flex items-center gap-3">
-                  <span className="text-[11px] text-muted-foreground">Lõm</span>
-                  <input
-                    type="range"
-                    min={-1}
-                    max={1}
-                    step={0.05}
-                    value={dewarpStrength}
-                    onChange={(e) => setDewarpStrength(Number(e.target.value))}
-                    className="flex-1 accent-primary"
-                  />
-                  <span className="text-[11px] text-muted-foreground">Phồng</span>
-                </div>
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  Thử nghiệm: điều chỉnh theo độ cong trang khi chụp.
-                </p>
+              <div className="rounded-xl border border-border bg-muted/40 px-3 py-2.5">
+                <Range
+                  label="Độ cong"
+                  value={dewarpStrength}
+                  min={-1}
+                  max={1}
+                  step={0.05}
+                  onChange={setDewarpStrength}
+                  format={(v) => `${v > 0 ? "+" : ""}${Math.round(v * 100)}%`}
+                  lowLabel="Lõm"
+                  highLabel="Phồng"
+                />
               </div>
             )}
           </div>
-          <div className="mt-3 grid gap-2 sm:grid-cols-3">
+
+          {boundary.length <= 4 && hasCurves && (
+            <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
+              Độ cong đo được — trên {fmtPct(curves[0])} · phải {fmtPct(curves[1])} ·
+              dưới {fmtPct(curves[2])} · trái {fmtPct(curves[3])}
+            </p>
+          )}
+
+          <div className="mt-3 flex flex-col gap-2.5 rounded-xl border border-border bg-muted/40 px-3 py-3">
             {(
               [
                 ["brightness", "Độ sáng"],
@@ -811,25 +805,19 @@ export function PageEditor({
                 ["saturation", "Bão hòa"],
               ] as [keyof Adjust, string][]
             ).map(([key, label]) => (
-              <div key={key}>
-                <div className="mb-1 flex justify-between text-xs">
-                  <span>{label}</span>
-                  <span className="tabular-nums text-muted-foreground">{Math.round(adjust[key] * 100)}%</span>
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={2}
-                  step={0.01}
-                  value={adjust[key]}
-                  onChange={(e) => adjustField(key, Number(e.target.value))}
-                  className="w-full accent-primary"
-                />
-              </div>
+              <Range
+                key={key}
+                label={label}
+                value={adjust[key]}
+                min={0}
+                max={2}
+                step={0.01}
+                onChange={(v) => adjustField(key, v)}
+                format={(v) => `${Math.round(v * 100)}%`}
+              />
             ))}
           </div>
-        </div>
-
+        </section>
       </div>
     </Sheet>
   );

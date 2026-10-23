@@ -4,8 +4,22 @@ import * as React from "react";
 import { Sheet } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
-import { FlipHorizontal2, ScanLine, CameraOff, Check, Loader2 } from "lucide-react";
+import {
+  CameraOff,
+  Check,
+  FlipHorizontal2,
+  Loader2,
+  ScanLine,
+} from "lucide-react";
 
+/**
+ * The viewfinder.
+ *
+ * The sweep marks the scan band across the live preview — the second and last
+ * place it is used in the app, because here it is literally the thing moving
+ * under the glass. A real scan needs the page to sit inside the band, so the
+ * band is drawn as a frame rather than a full-bleed wash.
+ */
 export function CameraCapture({
   onClose,
   onCaptured,
@@ -41,14 +55,18 @@ export function CameraCapture({
     (async () => {
       if (!window.isSecureContext) {
         setError(
-          "Camera cần HTTPS. Hãy mở trang bằng https:// (VD: " + window.location.origin.replace(/^http:/, "https:") + ") và chấp nhận chứng chỉ, hoặc dùng tải ảnh.",
+          "Camera cần HTTPS. Hãy mở trang bằng https:// (VD: " +
+            window.location.origin.replace(/^http:/, "https:") +
+            ") và chấp nhận chứng chỉ, hoặc dùng chọn ảnh.",
         );
         return;
       }
       if (typeof navigator.mediaDevices?.getUserMedia !== "function") {
         window.setTimeout(() => {
           if (!cancelled) {
-            setError("Đang yêu cầu quyền camera — nếu không có hộp thoại, trình duyệt bạn đang chặn. Hãy bật quyền camera hoặc dùng tải ảnh.");
+            setError(
+              "Đang yêu cầu quyền camera — nếu không có hộp thoại, trình duyệt bạn đang chặn. Hãy bật quyền camera hoặc chọn ảnh có sẵn.",
+            );
           }
         }, 0);
         return;
@@ -79,7 +97,9 @@ export function CameraCapture({
         setReady(true);
       } catch {
         setReady(false);
-        setError("Không thể truy cập camera — hãy cấp quyền camera/ảnh trong trình duyệt (biểu tượng khóa) rồi thử lại, hoặc dùng tải ảnh.");
+        setError(
+          "Không thể truy cập camera — hãy cấp quyền camera trong trình duyệt (biểu tượng khoá) rồi thử lại, hoặc chọn ảnh có sẵn.",
+        );
       }
     })();
 
@@ -152,16 +172,17 @@ export function CameraCapture({
       open={true}
       onClose={onClose}
       title="Chụp trang"
+      description="Đặt trang giấy trong khung, giữ máy thẳng và đủ sáng."
       className="sm:max-w-2xl"
       footer={
-        <div className="flex items-center justify-between">
-          <IconButton aria-label="Xoay camera" onClick={flipFacing}>
+        <div className="flex items-center justify-between gap-2">
+          <IconButton aria-label="Đổi camera trước/sau" onClick={flipFacing}>
             <FlipHorizontal2 className="h-5 w-5" />
           </IconButton>
 
           <Button
             size="lg"
-            className="min-w-28"
+            className="min-w-32"
             onClick={capture}
             disabled={!ready || capturing}
           >
@@ -173,34 +194,40 @@ export function CameraCapture({
             {capturing ? "Đang chụp…" : "Chụp"}
           </Button>
 
-          <span className="w-10" />
+          <span className="w-10" aria-hidden="true" />
         </div>
       }
     >
-      <div className="relative h-[58dvh] w-full bg-black">
+      <div className="bed relative h-[58dvh] w-full">
         {error ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
-            <CameraOff className="h-8 w-8 text-muted-foreground" />
-            <p className="max-w-xs text-sm text-muted-foreground">{error}</p>
+            <CameraOff className="h-8 w-8 text-muted-foreground" aria-hidden="true" />
+            <p className="max-w-xs text-sm leading-relaxed text-muted-foreground">
+              {error}
+            </p>
           </div>
         ) : (
-          <video
-            ref={videoRef}
-            playsInline
-            muted
-            autoPlay
-            aria-label="Khung hình camera"
-            className="h-full w-full object-contain"
-          />
-        )}
-        {!error && ready && (
-          <div className="pointer-events-none absolute inset-0">
-            <div className="scan-beam" />
-          </div>
+          <>
+            <video
+              ref={videoRef}
+              playsInline
+              muted
+              autoPlay
+              aria-label="Khung hình camera"
+              className="h-full w-full object-contain"
+            />
+            {ready && (
+              <div className="pointer-events-none absolute inset-0" aria-hidden="true">
+                {/* The scan band: the sweep travels inside the frame only. */}
+                <div className="sweep" />
+                <div className="absolute inset-5 rounded-lg border border-white/25" />
+              </div>
+            )}
+          </>
         )}
         {flash && (
-          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-white/30 transition-opacity">
-            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg">
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-white/40">
+            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-xl">
               <Check className="h-8 w-8" />
             </div>
           </div>
